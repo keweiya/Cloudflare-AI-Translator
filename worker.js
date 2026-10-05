@@ -1979,7 +1979,7 @@ function getHtml(siteKey, turnstileEnabled) {
 
     .workspace{display:grid;grid-template-columns:1fr 1fr;gap:18px;align-items:start}
     .pane{
-      display:flex;flex-direction:column;min-height:400px;
+      display:flex;flex-direction:column;
       background:var(--card);border:1px solid var(--line);border-radius:var(--r-lg);box-shadow:var(--shadow);
       overflow:hidden;transition:border-color .2s,box-shadow .2s;
     }
@@ -2002,9 +2002,12 @@ function getHtml(siteKey, turnstileEnabled) {
     }
 
     /* ---------- 输入区 ---------- */
+    /* 注意：这里不能用 flex:1 —— flex-basis:0% 会让 JS 设置的高度失效，
+       输入长文时既不增高也不能滚动（内容被裁掉）。改为由 JS 显式控制高度。 */
     .editor{
-      flex:1;width:100%;min-height:200px;border:none;outline:none;background:transparent;resize:none;
-      font-size:15.5px;line-height:1.95;color:var(--text);overflow:hidden;display:block;
+      flex:none;display:block;width:100%;min-height:200px;border:none;outline:none;
+      background:transparent;resize:none;overflow-y:auto;overflow-x:hidden;
+      font-size:15.5px;line-height:1.95;color:var(--text);
     }
     .editor::placeholder{color:var(--faint)}
     .examples{display:flex;flex-wrap:wrap;gap:7px;margin-top:12px}
@@ -2122,10 +2125,11 @@ function getHtml(siteKey, turnstileEnabled) {
 
     /* ---------- 响应式 ---------- */
     @media (max-width:960px){
+      /* 两栏变成上下堆叠，各自按内容高度，不再互相对齐 */
       .workspace{grid-template-columns:1fr}
-      .pane{min-height:340px}
       .lang-bar-right{width:100%;margin-left:0}
       .lang-bar-right .btn{flex:1}
+      .editor,.result{min-height:170px}
     }
     /* ---------- 手机适配 ---------- */
     @media (max-width:620px){
@@ -2150,7 +2154,6 @@ function getHtml(siteKey, turnstileEnabled) {
       .pane-body{padding:13px}
       /* ≥16px 可避免 iOS 聚焦时自动放大页面 */
       .editor,.result{font-size:16px}
-      .pane{min-height:300px}
       .editor,.result{min-height:170px}
       .pane-meta .btn-sm{height:28px;padding:0 9px}
       .drawer{width:100%;max-width:100%}
@@ -2545,14 +2548,31 @@ function getHtml(siteKey, turnstileEnabled) {
       lastSubmittedTo = "";
       translateText(false);
     }
+    // 桌面：左右两栏高度取"较长的一边"，严格对齐且不留空白
+    // 手机：两栏上下堆叠，各按自己的内容高度，不做对齐
+    const STACKED_QUERY = "(max-width: 960px)";
+    const MIN_PANE_BODY = 210;
+    const MIN_PANE_BODY_STACKED = 170;
+    function isStackedLayout() {
+      return window.matchMedia ? window.matchMedia(STACKED_QUERY).matches : window.innerWidth <= 960;
+    }
     function autoGrowTextarea() {
       sourceText.style.height = "auto";
-      sourceText.style.height = Math.max(sourceText.scrollHeight, 200) + "px";
+      sourceText.style.height = sourceText.scrollHeight + "px";
     }
     function syncPanelHeights() {
-      const leftH = Math.max(sourceText.scrollHeight, 200);
-      const rightH = Math.max(result.scrollHeight, 200);
-      const target = Math.max(leftH, rightH, 200);
+      sourceText.style.minHeight = "0px";
+      result.style.minHeight = "0px";
+      sourceText.style.height = "auto";
+      if (isStackedLayout()) {
+        sourceText.style.minHeight = "";
+        result.style.minHeight = "";
+        sourceText.style.height = Math.max(sourceText.scrollHeight, MIN_PANE_BODY_STACKED) + "px";
+        return;
+      }
+      const leftH = Math.max(sourceText.scrollHeight, MIN_PANE_BODY);
+      const rightH = Math.max(result.scrollHeight, MIN_PANE_BODY);
+      const target = Math.max(leftH, rightH);
       sourceText.style.height = target + "px";
       result.style.minHeight = target + "px";
     }
