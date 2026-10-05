@@ -1977,7 +1977,7 @@ function getHtml(siteKey, turnstileEnabled) {
     .lang-bar-right{margin-left:auto;display:flex;gap:8px}
     .lbl-short{display:none}
 
-    .workspace{display:grid;grid-template-columns:1fr 1fr;gap:18px;align-items:start}
+    .workspace{display:grid;grid-template-columns:1fr 1fr;gap:18px;align-items:start;overflow-anchor:none}
     .pane{
       display:flex;flex-direction:column;
       background:var(--card);border:1px solid var(--line);border-radius:var(--r-lg);box-shadow:var(--shadow);
@@ -2332,6 +2332,9 @@ function getHtml(siteKey, turnstileEnabled) {
     let currentMode = "translate";
     let toastTimer = null;
     let historyQuery = "";
+    // 高度同步用：流式输出期间只增不减，避免浏览器夹回滚动位置
+    let isStreaming = false;
+    let lastPaneHeight = 0;
 
     const byId = function (id) { return document.getElementById(id); };
     const gate = byId("gate");
@@ -2571,20 +2574,26 @@ function getHtml(siteKey, turnstileEnabled) {
       sourceText.style.height = Math.max(sourceText.scrollHeight, paneBodyFloor()) + "px";
     }
     function syncPanelHeights() {
+      const stacked = isStackedLayout();
+      const floor = paneBodyFloor();
+      const scrollY = window.pageYOffset || document.documentElement.scrollTop || 0;
       // 先清掉上一轮写入的行内尺寸，量到的才是真实内容高度；
       // 下限由 CSS 的 min-height 常量保证，所以不存在"只增不减"的棘轮问题
       sourceText.style.height = "";
       sourceText.style.minHeight = "";
       result.style.minHeight = "";
-      if (isStackedLayout()) {
-        autoGrowTextarea();
-        return;
-      }
-      const leftH = Math.max(sourceText.scrollHeight, MIN_PANE_BODY);
-      const rightH = Math.max(result.scrollHeight, MIN_PANE_BODY);
-      const target = Math.max(leftH, rightH);
+      const leftContent = Math.max(sourceText.scrollHeight, floor);
+      const rightContent = Math.max(result.scrollHeight, floor);
+      let target = stacked ? leftContent : Math.max(leftContent, rightContent);
+      // 流式输出过程中只增不减：文档高度一旦瞬间变矮，浏览器会把滚动位置
+      // 夹回新的最大范围（表现为"滚动时画面被拉回去"）
+      if (isStreaming && target < lastPaneHeight) target = lastPaneHeight;
+      lastPaneHeight = target;
       sourceText.style.height = target + "px";
-      result.style.minHeight = target + "px";
+      result.style.minHeight = stacked ? "" : target + "px";
+      // 测量过程中可能已被浏览器夹走滚动位置，此处还原（同一帧内，用户无感）
+      const nowY = window.pageYOffset || document.documentElement.scrollTop || 0;
+      if (nowY !== scrollY) window.scrollTo(0, scrollY);
     }
 
     /* ---------------- 会话与验证 ---------------- */
@@ -2810,33 +2819,40 @@ function getHtml(siteKey, turnstileEnabled) {
       result.innerHTML = renderSkeleton();
       resultCount.innerText = "0 字";
       setStatus(manual ? "正在翻译…" : "自动翻译中…", "busy");
+      isStreaming = true;
       requestAnimationFrame(syncPanelHeights);
       let attempt = 0;
-      while (attempt < MAX_RETRY) {
-        attempt++;
-        try {
-          if (attempt > 1) setStatus("请求失败，正在重试（" + attempt + "/" + MAX_RETRY + "）", "busy");
-          const finalText = await doTranslateRequest(text, currentController.signal);
-          setStatus(currentMode === "word" ? "解析完成" : "翻译完成", "ok");
-          saveHistory({
-            id: Date.now() + "_" + Math.random().toString(36).slice(2, 8),
-            source: text,
-            from: fromLang.value,
-            to: toLang.value,
-            result: finalText,
-            mode: currentMode,
-            time: new Date().toISOString()
-          });
-          return;
-        } catch (err) {
-          if (err.name === "AbortError") return;
-          if (err.retryable === false || attempt >= MAX_RETRY) {
-            setStatus("处理失败", "err");
-            renderFriendlyError(err && err.message);
+      try {
+        while (attempt < MAX_RETRY) {
+          attempt++;
+          try {
+            if (attempt > 1) setStatus("请求失败，正在重试（" + attempt + "/" + MAX_RETRY + "）", "busy");
+            const finalText = await doTranslateRequest(text, currentController.signal);
+            setStatus(currentMode === "word" ? "解析完成" : "翻译完成", "ok");
+            saveHistory({
+              id: Date.now() + "_" + Math.random().toString(36).slice(2, 8),
+              source: text,
+              from: fromLang.value,
+              to: toLang.value,
+              result: finalText,
+              mode: currentMode,
+              time: new Date().toISOString()
+            });
             return;
+          } catch (err) {
+            if (err.name === "AbortError") return;
+            if (err.retryable === false || attempt >= MAX_RETRY) {
+              setStatus("处理失败", "err");
+              renderFriendlyError(err && err.message);
+              return;
+            }
+            await sleep(700 * attempt);
           }
-          await sleep(700 * attempt);
         }
+      } finally {
+        // 流式结束后再允许收缩，避免输出过程中文档高度反复变化
+        isStreaming = false;
+        requestAnimationFrame(syncPanelHeights);
       }
     }
 
