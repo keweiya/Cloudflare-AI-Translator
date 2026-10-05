@@ -69,8 +69,16 @@ async function handleVerify(request, env) {
 async function handleTranslateStream(request, env) {
   try {
     const turnstileEnabled = isTurnstileEnabled(env);
-    if (!env.BASE_URL || !env.API_KEY || (turnstileEnabled && !env.SESSION_SECRET)) {
-      return json({ error: "Service configuration is incomplete" }, 500);
+    const upstream = resolveUpstreamConfig(env);
+    if (upstream.useCFAI) {
+      if (!env.AI || !upstream.model) {
+        return json({ error: "CF AI configuration incomplete: need AI binding and CF_MODEL" }, 500);
+      }
+    } else if (!upstream.baseUrl || !upstream.apiKey || !upstream.model) {
+      return json({ error: "Custom API configuration incomplete: need CUSTOM_API_BASE_URL, CUSTOM_API_KEY, and CUSTOM_API_MODEL" }, 500);
+    }
+    if (turnstileEnabled && !env.SESSION_SECRET) {
+      return json({ error: "SESSION_SECRET is not configured" }, 500);
     }
     if (turnstileEnabled) {
       const validSession = await verifySessionCookie(request, env);
@@ -90,38 +98,51 @@ async function handleTranslateStream(request, env) {
     if (isSameLang) {
       return createImmediateTranslateStream(text);
     }
-    // Short text mode for concise requests.
+
     const isShortText = text.length < 300 && text.split('\n').length <= 5;
     let messages = [];
     let wordTemplate = null;
+
+    // 强制全局要求：禁止思考，只输出结果
+    const NO_THINKING_PROMPT = "\nCRITICAL INSTRUCTION: Do NOT perform thinking, analysis, or reasoning. Do NOT use <think> or <analysis> tags. Directly output the final translation result immediately.";
+
     if (isSingleWord) {
       wordTemplate = getWordExplainTemplate(to);
-      // Word explanation mode.
       messages = [
         {
           role: "system",
           content:
-            "You are a professional bilingual vocabulary assistant.\n" +
+            "You are a professional bilingual vocabulary assistant." + NO_THINKING_PROMPT + "\n" +
             "Output structured markdown only.\n" +
             "Use only unordered list items starting with '- '.\n" +
             "Do not use numbered lists.\n" +
             "Do not output explanations about your process.\n" +
-            "All section titles and descriptions must be in target language.",
+            "All section titles and descriptions must be in target language.\n" +
+            "IMPORTANT RULES:\n" +
+            "1. The SOURCE WORD is the English word given by the user. You are explaining THIS English word.\n" +
+            "2. The top heading (#) must be the DIRECT WORD-FOR-WORD translation, NOT a description or category.\n" +
+            "   CORRECT examples: '# 你好' for hello, '# 员工' for employees, '# 猫' for cat.\n" +
+            "   WRONG examples: '# 问候语' (this is a description, not a translation), '# [该词的中文对应词]' (placeholder).\n" +
+            "3. Meaning and usage descriptions should be written in target language, explaining the SOURCE English word.\n" +
+            "4. Collocations must be in the SOURCE language (English), with target language translation in parentheses.\n" +
+            "5. Example sentences must be in the SOURCE language (English), with target language translation in parentheses.",
         },
         {
           role: "user",
           content:
-            `Please explain the word "${text.trim()}" in ${mapLangName(to)}.\n\n` +
+            `The source word to explain is: "${text.trim()}" (English).\n` +
+            `Explain this English word in ${mapLangName(to)}.\n\n` +
             `Use this exact structure:\n` +
-            `# ${wordTemplate.title}\n\n` +
+            `# [Most common ${mapLangName(to)} translation of "${text.trim()}"]\n\n` +
             `## ${wordTemplate.meaning}\n` +
-            `- ...\n` +
+            `- (describe the meaning of the English word "${text.trim()}" in ${mapLangName(to)})\n` +
             `## ${wordTemplate.usage}\n` +
-            `- ...\n` +
+            `- (explain part of speech and usage of "${text.trim()}" in ${mapLangName(to)})\n` +
             `## ${wordTemplate.collocations}\n` +
-            `- ...\n` +
+            `- English collocation (${mapLangName(to)} translation)\n` +
             `## ${wordTemplate.examples}\n` +
-            `- ...\n\n` +
+            `- English example sentence. (${mapLangName(to)} translation)\n\n` +
+            `Replace ALL bracket placeholders with actual content.\n` +
             `Except the top title, only use \`##\` headings and \`-\` bullet items.`,
         },
       ];
@@ -133,7 +154,7 @@ async function handleTranslateStream(request, env) {
         {
           role: "system",
           content:
-            "You are a precise technical translator.\n" +
+            "You are a precise technical translator." + NO_THINKING_PROMPT + "\n" +
             "Output ONLY the translation result in the target language.\n" +
             "TRANSLATE EVERY PART of the input into the target language.\n" +
             "If input is mixed-language (e.g. Chinese + English), translate ALL of it.\n" +
@@ -153,7 +174,7 @@ async function handleTranslateStream(request, env) {
         {
           role: "system",
           content:
-            "You are a technical document translator.\n" +
+            "You are a technical document translator." + NO_THINKING_PROMPT + "\n" +
             "Preserve original paragraph structure and markdown format.\n" +
             "TRANSLATE EVERY PART of the input into the target language.\n" +
             "If input contains mixed languages, translate ALL fragments.\n" +
@@ -180,147 +201,552 @@ async function handleTranslateStream(request, env) {
           "- Keep essential technical terms only when translating them would reduce clarity.";
       }
     }
-    const targetModel = env.API_MODEL || "qwen3.5-flash";
-    const upstreamRes = await fetch(stripSlash(env.BASE_URL) + "/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: "Bearer " + env.API_KEY,
-      },
-      body: JSON.stringify({
-        model: targetModel,
-        temperature: 0.2,
-        stream: true,
-        messages,
-      }),
-    });
-    if (!upstreamRes.ok || !upstreamRes.body) {
-      let detail = "";
-      try {
-        detail = (await upstreamRes.text()).slice(0, 300);
-      } catch {}
-      return json(
-        { error: detail ? ("Upstream service error: " + detail) : "Service temporarily unavailable. Please retry later." },
-        502
-      );
-    }
+
+    const targetModel = upstream.model;
+    const timeouts = resolveTimeouts(env);
+    const upstreamCtx = {
+      useCFAI: upstream.useCFAI,
+      baseUrl: upstream.baseUrl,
+      apiKey: upstream.apiKey,
+      model: targetModel,
+      messages,
+      env,
+    };
+
+    const encoder = new TextEncoder();
+    let liveAbort = null;
+
     const stream = new ReadableStream({
       async start(controller) {
-        const encoder = new TextEncoder();
         const decoder = new TextDecoder();
-        const reader = upstreamRes.body.getReader();
-        let buffer = "";
+        const deadline = Date.now() + timeouts.totalMs;
+        let clientGone = false;
+        let currentAttemptAbort = null;
+        let activeReader = null;
         let fullText = "";
-        controller.enqueue(
-          encoder.encode(
-            "event: start\ndata: " +
-              JSON.stringify({ ok: true, mode: isSingleWord ? "word" : "translate" }) +
-              "\n\n"
-          )
-        );
+        let sentLive = "";
+
+        const send = (event, data) => {
+          if (clientGone) return false;
+          try {
+            controller.enqueue(
+              encoder.encode("event: " + event + "\ndata: " + JSON.stringify(data) + "\n\n")
+            );
+            return true;
+          } catch {
+            clientGone = true;
+            return false;
+          }
+        };
+
+        const onClientGone = () => {
+          clientGone = true;
+          try {
+            currentAttemptAbort?.abort(new Error("client disconnected"));
+          } catch {}
+        };
+        if (request.signal) {
+          if (request.signal.aborted) onClientGone();
+          else request.signal.addEventListener("abort", onClientGone);
+        }
+
+        const heartbeat = setInterval(() => {
+          send("ping", { t: Date.now() });
+        }, timeouts.heartbeatMs);
+
+        let closed = false;
+        const finish = () => {
+          if (closed) return;
+          closed = true;
+          clearInterval(heartbeat);
+          try {
+            controller.close();
+          } catch {}
+        };
+
         try {
-          while (true) {
-            const { value, done } = await reader.read();
-            if (done) break;
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split("\n");
-            buffer = lines.pop() || "";
-            for (const line of lines) {
-              const trimmed = line.trim();
-              if (!trimmed.startsWith("data:")) continue;
-              const raw = trimmed.slice(5).trim();
-              if (raw === "[DONE]") {
-                const cleaned = cleanupModelOutput(fullText, {
-                  stripMetaNotes: !isSingleWord,
+        // 先发 start，立即让浏览器拿到响应头，避免首字节等待导致网关超时
+          send("start", { ok: true, mode: isSingleWord ? "word" : "translate" });
+
+          const pushLive = () => {
+            if (clientGone) return;
+            if (isSingleWord) {
+              const live = normalizeWordMarkdownOutput(
+                cleanupModelOutput(fullText, {
+                  allowPartialFence: true,
                   allowPartialReasoning: true,
-                });
-                let finalOut = isSingleWord ? normalizeWordMarkdownOutput(cleaned, wordTemplate) : cleaned;
-                if (isSingleWord) {
-                  finalOut = await repairWordExamplesIfNeeded(finalOut, {
-                    from,
-                    to,
-                    wordTemplate,
-                    env,
-                    model: targetModel,
-                  });
-                }
-                controller.enqueue(
-                  encoder.encode("event: final\ndata: " + JSON.stringify({ content: finalOut }) + "\n\n")
-                );
-                controller.enqueue(encoder.encode('event: done\ndata: {"done":true}\n\n'));
-                controller.close();
-                return;
+                }),
+                wordTemplate
+              );
+              if (live.trim() && live !== sentLive) {
+                sentLive = live;
+                send("delta", { content: live, replace: true });
               }
+              return;
+            }
+            const safe = stripReasoningArtifacts(fullText, true);
+            if (!safe || safe === sentLive) return;
+            if (safe.startsWith(sentLive)) {
+              send("delta", { content: safe.slice(sentLive.length) });
+            } else {
+              send("delta", { content: safe, replace: true });
+            }
+            sentLive = safe;
+          };
+
+          let attempt = 0;
+          let succeeded = false;
+          let lastError = null;
+
+          while (attempt < timeouts.maxAttempts && !succeeded && !clientGone) {
+            if (Date.now() >= deadline) {
+              lastError = lastError || new Error("Upstream request exceeded the total time limit.");
+              break;
+            }
+            attempt++;
+            if (attempt > 1) {
+              fullText = "";
+              sentLive = "";
+              send("reset", { attempt });
+              await sleepMs(Math.min(600 * attempt, 2000));
+              if (clientGone) break;
+            }
+
+            const attemptBudget = Math.max(3000, Math.min(timeouts.totalMs, deadline - Date.now()));
+            const ac = new AbortController();
+            currentAttemptAbort = ac;
+            liveAbort = ac;
+            let idleTimer = null;
+            const armIdle = () => {
+              clearTimeout(idleTimer);
+              idleTimer = setTimeout(() => {
+                try {
+                  ac.abort(new Error("No data from upstream for " + timeouts.idleMs + "ms"));
+                } catch {}
+              }, timeouts.idleMs);
+            };
+            const attemptTimer = setTimeout(() => {
               try {
-                const chunk = JSON.parse(raw);
-                const delta =
-                  chunk?.choices?.[0]?.delta?.content ||
-                  chunk?.choices?.[0]?.message?.content ||
-                  chunk?.choices?.[0]?.text ||
-                  "";
-                if (delta) {
-                  fullText += delta;
-                  if (isSingleWord) {
-                    const liveText = normalizeWordMarkdownOutput(
-                      cleanupModelOutput(fullText, {
-                        allowPartialFence: true,
-                        allowPartialReasoning: true,
-                      }),
-                      wordTemplate
-                    );
-                    controller.enqueue(
-                      encoder.encode(
-                        "event: delta\ndata: " + JSON.stringify({ content: liveText, replace: true }) + "\n\n"
-                      )
-                    );
-                  } else {
-                    controller.enqueue(
-                      encoder.encode("event: delta\ndata: " + JSON.stringify({ content: delta }) + "\n\n")
-                    );
-                  }
-                }
+                ac.abort(new Error("Upstream attempt timed out"));
               } catch {}
+            }, attemptBudget);
+
+            try {
+              const upstreamBody = await openUpstreamStream(upstreamCtx, ac.signal);
+              const reader = upstreamBody.getReader();
+              activeReader = reader;
+              armIdle();
+              let buffer = "";
+              let rawBody = "";
+              let hasChunks = false;
+
+              while (true) {
+                // 即使上游忽略 abort 信号，这里也能被超时中断，避免请求永久挂起
+                const { value, done } = await raceWithSignal(reader.read(), ac.signal);
+                if (done) break;
+                if (!value || !value.length) continue;
+                hasChunks = true;
+                // 任何字节（包括思维链 token）都代表上游仍然存活，重置空闲计时
+                armIdle();
+                const decoded = decoder.decode(value, { stream: true });
+                rawBody += decoded;
+                buffer += decoded;
+                const lines = buffer.split("\n");
+                buffer = lines.pop() || "";
+                let appended = "";
+                for (const line of lines) {
+                  const delta = extractStreamDelta(line);
+                  if (delta) appended += delta;
+                }
+                if (appended) fullText += appended;
+                pushLive();
+              }
+
+              if (buffer.trim()) {
+                const rest = extractStreamDelta(buffer);
+                if (rest) fullText += rest;
+              }
+              if (!fullText.trim() && rawBody.trim()) {
+                fullText = extractWholeBodyText(rawBody);
+              }
+              if (!hasChunks && !fullText.trim()) {
+                throw new Error("Upstream returned an empty body.");
+              }
+              if (!fullText.trim()) {
+                throw new Error("Upstream returned no usable text tokens.");
+              }
+              pushLive();
+              succeeded = true;
+            } catch (err) {
+              lastError = err;
+              console.error(
+                JSON.stringify({
+                  timestamp: new Date().toISOString(),
+                  level: "ERROR",
+                  event: "API_FETCH_FAILED",
+                  message: err && err.message ? err.message : String(err),
+                  retry: `${attempt}/${timeouts.maxAttempts}`,
+                  model: targetModel,
+                  sourceTextSnippet: text.slice(0, 100),
+                })
+              );
+            } finally {
+              clearTimeout(idleTimer);
+              clearTimeout(attemptTimer);
+              if (activeReader) {
+                const stale = activeReader;
+                activeReader = null;
+                try {
+                  stale.cancel().catch(() => {});
+                } catch {}
+              }
+              currentAttemptAbort = null;
+              liveAbort = null;
             }
           }
+
+          if (!succeeded) {
+            if (!clientGone) {
+              send("error", {
+                error: describeUpstreamFailure(lastError),
+                retryable: isRetryableUpstreamError(lastError),
+              });
+            }
+            return;
+          }
+
           const cleaned = cleanupModelOutput(fullText, {
             stripMetaNotes: !isSingleWord,
-            allowPartialReasoning: true,
+            allowPartialReasoning: false,
           });
+
           let finalOut = isSingleWord ? normalizeWordMarkdownOutput(cleaned, wordTemplate) : cleaned;
-          if (isSingleWord) {
-            finalOut = await repairWordExamplesIfNeeded(finalOut, {
-              from,
-              to,
-              wordTemplate,
-              env,
-              model: targetModel,
-            });
+
+          if (!finalOut.trim()) {
+            finalOut = isSingleWord ? `# 暂无释义\n\n- 抱歉，未能为该输入生成有效的词汇解析。` : text;
           }
-          controller.enqueue(
-            encoder.encode("event: final\ndata: " + JSON.stringify({ content: finalOut }) + "\n\n")
+
+          // 先把结果发给前端，再做可选的例句修复；这样二次调用再慢也不会让请求卡住
+          send("final", { content: finalOut });
+
+          if (isSingleWord && !clientGone) {
+            try {
+              const repaired = await repairWordExamplesIfNeeded(finalOut, {
+                from,
+                to,
+                wordTemplate,
+                env,
+                model: targetModel,
+                useCFAI: upstreamCtx.useCFAI,
+                baseUrl: upstreamCtx.baseUrl,
+                apiKey: upstreamCtx.apiKey,
+                timeoutMs: timeouts.repairMs,
+              });
+              if (repaired && repaired !== finalOut) {
+                finalOut = repaired;
+                send("final", { content: finalOut });
+              }
+            } catch {}
+          }
+
+          send("done", { done: true });
+        } catch (streamErr) {
+          console.error(
+            JSON.stringify({
+              timestamp: new Date().toISOString(),
+              level: "ERROR",
+              event: "TRANSLATE_STREAM_ABORTED",
+              message: streamErr && streamErr.message ? streamErr.message : String(streamErr),
+            })
           );
-          controller.enqueue(encoder.encode('event: done\ndata: {"done":true}\n\n'));
-          controller.close();
-        } catch {
-          controller.enqueue(encoder.encode('event: error\ndata: {"error":"Processing interrupted. Please retry."}\n\n'));
-          controller.close();
+          send("error", { error: "Processing interrupted. Please retry.", retryable: true });
+        } finally {
+          // 无论成功、失败还是客户端断开，都必须关闭流，否则请求会一直挂着
+          finish();
         }
       },
+      cancel() {
+        try {
+          liveAbort?.abort(new Error("client disconnected"));
+        } catch {}
+      },
     });
+
     return new Response(stream, {
       status: 200,
       headers: {
         "Content-Type": "text/event-stream; charset=utf-8",
         "Cache-Control": "no-cache, no-transform",
+        "X-Accel-Buffering": "no",
         Connection: "keep-alive",
         "Access-Control-Allow-Origin": "*",
         "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
         "Access-Control-Allow-Headers": "Content-Type, Authorization",
       },
     });
-  } catch {
+  } catch (globalErr) {
+    console.error(
+      JSON.stringify({
+        timestamp: new Date().toISOString(),
+        level: "CRITICAL",
+        event: "TRANSLATE_STREAM_CRASH",
+        message: globalErr.message,
+      })
+    );
     return json({ error: "Processing failed. Please retry." }, 500);
   }
+}
+
+function envNumber(env, key, fallback) {
+  const raw = env ? env[key] : undefined;
+  if (raw === undefined || raw === null || raw === "") return fallback;
+  const n = Number(String(raw).trim());
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+
+function isCFAI(env) {
+  const raw = String((env && env.CF_AI) ?? "false").trim().toLowerCase();
+  return ["true", "1", "on", "yes"].includes(raw);
+}
+
+function resolveUpstreamConfig(env) {
+  const useCFAI = isCFAI(env);
+  const baseUrl = String(env.CUSTOM_API_BASE_URL || env.BASE_URL || "").trim();
+  const apiKey = String(env.CUSTOM_API_KEY || env.API_KEY || "").trim();
+  const model = String(
+    useCFAI
+      ? env.CF_MODEL || env.CUSTOM_API_MODEL || env.API_MODEL || ""
+      : env.CUSTOM_API_MODEL || env.API_MODEL || ""
+  ).trim();
+  return { useCFAI, baseUrl, apiKey, model };
+}
+
+function resolveTimeouts(env) {
+  return {
+    idleMs: envNumber(env, "UPSTREAM_IDLE_TIMEOUT_MS", 40000),
+    totalMs: envNumber(env, "UPSTREAM_TOTAL_TIMEOUT_MS", 300000),
+    maxAttempts: Math.max(1, Math.min(5, Math.round(envNumber(env, "UPSTREAM_MAX_ATTEMPTS", 3)))),
+    heartbeatMs: Math.max(1000, envNumber(env, "SSE_HEARTBEAT_MS", 15000)),
+    repairMs: envNumber(env, "REPAIR_TIMEOUT_MS", 25000),
+  };
+}
+
+function sleepMs(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function abortError(signal) {
+  const reason = signal && signal.reason;
+  if (reason instanceof Error) return reason;
+  const err = new Error(reason ? String(reason) : "Upstream request aborted");
+  err.name = "AbortError";
+  return err;
+}
+
+function raceWithSignal(promise, signal) {
+  if (!signal) return promise;
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      reject(abortError(signal));
+      return;
+    }
+    let settled = false;
+    const onAbort = () => {
+      if (settled) return;
+      settled = true;
+      reject(abortError(signal));
+    };
+    signal.addEventListener("abort", onAbort);
+    promise.then(
+      (value) => {
+        if (settled) return;
+        settled = true;
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (err) => {
+        if (settled) return;
+        settled = true;
+        signal.removeEventListener("abort", onAbort);
+        reject(err);
+      }
+    );
+  });
+}
+
+function textOf(value) {
+  return typeof value === "string" ? value : "";
+}
+
+// 同时兼容 OpenAI 兼容接口 (choices[].delta.content) 与 Cloudflare Workers AI (response)
+function extractStreamDelta(line) {
+  const trimmed = String(line || "").trim();
+  if (!trimmed || trimmed.startsWith(":")) return "";
+  let payload = trimmed;
+  if (payload.startsWith("data:")) payload = payload.slice(5).trim();
+  else if (payload.startsWith("event:") || payload.startsWith("id:")) return "";
+  if (!payload || payload === "[DONE]") return "";
+  let chunk;
+  try {
+    chunk = JSON.parse(payload);
+  } catch {
+    return "";
+  }
+  if (typeof chunk === "string") return chunk;
+  const choice = Array.isArray(chunk?.choices) ? chunk.choices[0] : null;
+  return (
+    textOf(choice?.delta?.content) ||
+    textOf(choice?.message?.content) ||
+    textOf(choice?.text) ||
+    textOf(chunk?.response) ||
+    textOf(chunk?.result?.response) ||
+    ""
+  );
+}
+
+// 兜底：部分平台忽略 stream:true，直接返回一整段 JSON
+function extractWholeBodyText(body) {
+  const raw = String(body || "").trim();
+  if (!raw) return "";
+  if (/^data:/m.test(raw)) {
+    const parts = [];
+    for (const line of raw.split("\n")) {
+      const piece = extractStreamDelta(line);
+      if (piece) parts.push(piece);
+    }
+    return parts.join("");
+  }
+  try {
+    return extractResultText(JSON.parse(raw));
+  } catch {
+    return "";
+  }
+}
+
+function extractResultText(result) {
+  if (!result) return "";
+  if (typeof result === "string") return result;
+  const choice = Array.isArray(result.choices) ? result.choices[0] : null;
+  return (
+    textOf(result.response) ||
+    textOf(choice?.message?.content) ||
+    textOf(choice?.delta?.content) ||
+    textOf(choice?.text) ||
+    textOf(result.result?.response) ||
+    ""
+  );
+}
+
+function textToStream(text) {
+  const payload = new TextEncoder().encode(
+    "data: " + JSON.stringify({ response: String(text || "") }) + "\n\ndata: [DONE]\n\n"
+  );
+  return new ReadableStream({
+    start(controller) {
+      controller.enqueue(payload);
+      controller.close();
+    },
+  });
+}
+
+async function openUpstreamStream(ctx, signal) {
+  if (ctx.useCFAI) {
+    const inputs = { messages: ctx.messages, stream: true };
+    let result;
+    try {
+      result = await raceWithSignal(ctx.env.AI.run(ctx.model, inputs), signal);
+    } catch (err) {
+      if (signal && signal.aborted) throw abortError(signal);
+      // 部分模型不支持 stream:true，回退到一次性返回
+      result = await raceWithSignal(
+        ctx.env.AI.run(ctx.model, { messages: ctx.messages }),
+        signal
+      );
+    }
+    if (result && typeof result.getReader === "function") return result;
+    if (result && result.body && typeof result.body.getReader === "function") return result.body;
+    if (result && typeof result[Symbol.asyncIterator] === "function") {
+      return asyncIterableToStream(result);
+    }
+    const text = extractResultText(result);
+    if (!text.trim()) throw new Error("Workers AI returned an empty response.");
+    return textToStream(text);
+  }
+
+  const res = await fetch(stripSlash(ctx.baseUrl) + "/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: "Bearer " + ctx.apiKey,
+    },
+    body: JSON.stringify({
+      model: ctx.model,
+      temperature: 0.1,
+      stream: true,
+      messages: ctx.messages,
+    }),
+    signal,
+  });
+
+  if (!res.ok || !res.body) {
+    let detail = "";
+    try {
+      detail = (await res.text()).slice(0, 300);
+    } catch {}
+    const err = new Error(detail || "HTTP Error " + (res && res.status));
+    err.status = res && res.status;
+    throw err;
+  }
+  return res.body;
+}
+
+function asyncIterableToStream(iterable) {
+  const encoder = new TextEncoder();
+  return new ReadableStream({
+    async start(controller) {
+      for await (const item of iterable) {
+        if (typeof item === "string") {
+          controller.enqueue(encoder.encode(item));
+        } else if (item instanceof Uint8Array) {
+          controller.enqueue(item);
+        } else {
+          controller.enqueue(
+            encoder.encode("data: " + JSON.stringify(item) + "\n\n")
+          );
+        }
+      }
+      controller.close();
+    },
+  });
+}
+
+function isRetryableUpstreamError(err) {
+  if (!err) return true;
+  if (err.name === "AbortError") return false;
+  const message = String(err.message || "");
+  // 已经重试过仍超时的，交给用户决定，避免前端再叠加重试把等待时间翻倍
+  if (/no data from upstream|timed? ?out|exceeded the total time limit|client disconnected/i.test(message)) {
+    return false;
+  }
+  const status = Number(err.status);
+  if (Number.isFinite(status) && status >= 400 && status < 500 && status !== 429) return false;
+  if (/no usable text tokens|empty body|empty response/i.test(message)) return false;
+  return true;
+}
+
+function describeUpstreamFailure(err) {
+  const message = String((err && err.message) || "").trim();
+  if (err && err.name === "AbortError") {
+    return "上游模型长时间没有返回数据（超时），已自动重试。请稍后再试，或更换响应更快的模型。";
+  }
+  if (/no data from upstream|timed? ?out|exceeded the total time limit/i.test(message)) {
+    return "上游模型响应超时。请稍后再试，或更换响应更快的模型。";
+  }
+  if (/no usable text tokens|empty body|empty response/i.test(message)) {
+    return "上游返回了空内容，可能是模型拒绝回答，请换个说法或更换模型后重试。";
+  }
+  if (!message) return "Upstream service error or empty response after retries.";
+  return "上游服务错误：" + message.slice(0, 200);
 }
 
 function cleanupTail(text) {
@@ -513,44 +939,16 @@ async function repairWordExamplesIfNeeded(text, ctx) {
   const draft = String(text || "").trim();
   if (!draft) return draft;
   if (!needsWordExampleRepair(draft, ctx?.from, ctx?.to, ctx?.wordTemplate)) return draft;
+  const timeoutMs = Number(ctx?.timeoutMs) > 0 ? Number(ctx.timeoutMs) : 25000;
+  const ac = new AbortController();
+  const timer = setTimeout(() => {
+    try {
+      ac.abort(new Error("Repair pass timed out"));
+    } catch {}
+  }, timeoutMs);
   try {
-    const src = String(ctx?.from || "auto").trim().toLowerCase();
-    const dst = String(ctx?.to || "zh").trim().toLowerCase();
-    const sectionName = String(ctx?.wordTemplate?.examples || "Example Sentences").trim();
-    const repairSystem =
-      "You repair markdown for vocabulary explanation output.\n" +
-      "Keep all headings and all non-example sections unchanged.\n" +
-      "Only edit bullets in the example section when needed.\n" +
-      "Do not add or remove sections or bullets.";
-    const repairUser =
-      "Source language code: " + src + "\n" +
-      "Target language code: " + dst + "\n" +
-      'Example section heading: "' + sectionName + '"\n' +
-      "Rules:\n" +
-      "1) If source and target are different, every example bullet must contain source sentence + target translation.\n" +
-      "2) Keep bullet count unchanged.\n" +
-      "3) Use this format: Source sentence. (translation in target language)\n" +
-      "4) Return markdown only, no code fences.\n\n" +
-      "Input markdown:\n" + draft;
-    const res = await fetch(stripSlash(ctx.env.BASE_URL) + "/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: "Bearer " + ctx.env.API_KEY,
-      },
-      body: JSON.stringify({
-        model: ctx.model || "qwen3.5-flash",
-        temperature: 0,
-        stream: false,
-        messages: [
-          { role: "system", content: repairSystem },
-          { role: "user", content: repairUser },
-        ],
-      }),
-    });
-    if (!res.ok) return draft;
-    const json = await res.json();
-    const repaired = json?.choices?.[0]?.message?.content || "";
+    // 整段修复请求都参与超时竞争：即使上游不响应 abort，也不会拖住整个翻译请求
+    const repaired = await raceWithSignal(runWordExampleRepair(draft, ctx, ac.signal), ac.signal);
     if (!repaired) return draft;
     const cleaned = cleanupModelOutput(repaired, {
       stripMetaNotes: false,
@@ -561,7 +959,62 @@ async function repairWordExamplesIfNeeded(text, ctx) {
     return normalized;
   } catch {
     return draft;
+  } finally {
+    clearTimeout(timer);
   }
+}
+
+async function runWordExampleRepair(draft, ctx, signal) {
+  const src = String(ctx?.from || "auto").trim().toLowerCase();
+  const dst = String(ctx?.to || "zh").trim().toLowerCase();
+  const sectionName = String(ctx?.wordTemplate?.examples || "Example Sentences").trim();
+  const repairSystem =
+    "You repair markdown for vocabulary explanation output.\n" +
+    "Keep all headings and all non-example sections unchanged.\n" +
+    "Only edit bullets in the example section when needed.\n" +
+    "Do not add or remove sections or bullets.";
+  const repairUser =
+    "Source language code: " + src + "\n" +
+    "Target language code: " + dst + "\n" +
+    'Example section heading: "' + sectionName + '"\n' +
+    "Rules:\n" +
+    "1) If source and target are different, every example bullet must contain source sentence + target translation.\n" +
+    "2) Keep bullet count unchanged.\n" +
+    "3) Use this format: Source sentence. (translation in target language)\n" +
+    "4) Return markdown only, no code fences.\n\n" +
+    "Input markdown:\n" + draft;
+  const messages = [
+    { role: "system", content: repairSystem },
+    { role: "user", content: repairUser },
+  ];
+  if (ctx.useCFAI) {
+    if (!ctx.env.AI) return "";
+    const result = await raceWithSignal(
+      ctx.env.AI.run(ctx.model, { messages, stream: false }),
+      signal
+    );
+    return extractResultText(result);
+  }
+  const baseUrl = String(ctx.baseUrl || ctx.env.CUSTOM_API_BASE_URL || ctx.env.BASE_URL || "").trim();
+  const apiKey = String(ctx.apiKey || ctx.env.CUSTOM_API_KEY || ctx.env.API_KEY || "").trim();
+  if (!baseUrl || !apiKey) return "";
+  const res = await fetch(stripSlash(baseUrl) + "/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: "Bearer " + apiKey,
+    },
+    body: JSON.stringify({
+      model: ctx.model,
+      temperature: 0,
+      stream: false,
+      messages,
+    }),
+    signal,
+  });
+  if (!res.ok) return "";
+  const data = await res.json();
+  return textOf(data?.choices?.[0]?.message?.content) || extractResultText(data);
 }
 
 function getWordSectionNames(template) {
@@ -1311,88 +1764,126 @@ function getHtml(siteKey, turnstileEnabled) {
       }
     }
     async function doTranslateRequest(text, signal) {
-      const res = await fetch("/api/translate/stream", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Accept: "text/event-stream",
-        },
-        body: JSON.stringify({
-          text,
-          from: fromLang.value,
-          to: toLang.value,
-        }),
-        signal,
-      });
-      if (!res.ok || !res.body) {
-        let msg = "服务暂时不可用，请再次尝试";
-        try {
-          const ct = (res.headers.get("content-type") || "").toLowerCase();
-          if (ct.includes("application/json")) {
-            const data = await res.json();
-            if (data?.error) msg = String(data.error);
-          } else {
-            const txt = (await res.text()).trim();
-            if (txt) msg = txt.slice(0, 300);
-          }
-        } catch {}
-        throw new Error(msg);
+      const WATCHDOG_MS = 60000;
+      let timedOut = false;
+      const localAbort = new AbortController();
+      const relayAbort = () => { try { localAbort.abort(); } catch {} };
+      if (signal) {
+        if (signal.aborted) relayAbort();
+        else signal.addEventListener("abort", relayAbort, { once: true });
       }
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder("utf-8");
-      let buffer = "";
-      let finalText = "";
-      let receivedAnyData = false;
-      let chunkCount = 0;
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        const decoded = decoder.decode(value, { stream: true });
-        buffer += decoded;
-        chunkCount++;
-        const blocks = buffer.split("\\n\\n");
-        buffer = blocks.pop() || "";
-        for (const block of blocks) {
-          const evt = parseSSE(block);
-          if (!evt) continue;
-          receivedAnyData = true;
-          if (evt.event === "start") currentMode = evt.data?.mode || "translate";
-          if (evt.event === "delta") {
-            if (evt.data?.replace) {
-              finalText = evt.data.content || finalText;
+      let watchdog = null;
+      const armWatchdog = () => {
+        clearTimeout(watchdog);
+        watchdog = setTimeout(() => { timedOut = true; relayAbort(); }, WATCHDOG_MS);
+      };
+      armWatchdog();
+      try {
+        const res = await fetch("/api/translate/stream", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Accept: "text/event-stream",
+          },
+          body: JSON.stringify({
+            text,
+            from: fromLang.value,
+            to: toLang.value,
+          }),
+          signal: localAbort.signal,
+        });
+        if (!res.ok || !res.body) {
+          let msg = "服务暂时不可用，请再次尝试";
+          try {
+            const ct = (res.headers.get("content-type") || "").toLowerCase();
+            if (ct.includes("application/json")) {
+              const data = await res.json();
+              if (data?.error) msg = String(data.error);
             } else {
-              finalText += evt.data.content || "";
+              const txt = (await res.text()).trim();
+              if (txt) msg = txt.slice(0, 300);
             }
-            renderResult(finalText, true);
-            resultCount.innerText = finalText.length + " 字";
-          }
-          if (evt.event === "final") {
-            finalText = evt.data.content || finalText;
-            renderResult(finalText, false);
-            resultCount.innerText = finalText.length + " 字";
-          }
-          if (evt.event === "done") {
-            return finalText;
-          }
-          if (evt.event === "error") {
-            throw new Error(evt.data?.error || "处理失败，请再次尝试");
+          } catch {}
+          const fatal = res.status === 400 || res.status === 401 || res.status === 403;
+          const err = new Error(msg);
+          if (fatal) err.retryable = false;
+          throw err;
+        }
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder("utf-8");
+        let buffer = "";
+        let finalText = "";
+        let receivedAnyData = false;
+        let chunkCount = 0;
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          armWatchdog();
+          const decoded = decoder.decode(value, { stream: true });
+          buffer += decoded;
+          chunkCount++;
+          const blocks = buffer.split("\\n\\n");
+          buffer = blocks.pop() || "";
+          for (const block of blocks) {
+            const evt = parseSSE(block);
+            if (!evt) continue;
+            receivedAnyData = true;
+            armWatchdog();
+            if (evt.event === "ping") continue;
+            if (evt.event === "start") currentMode = evt.data?.mode || "translate";
+            if (evt.event === "reset") {
+              finalText = "";
+              result.innerHTML = '<div class="result-box result-typing md"></div>';
+              resultCount.innerText = "0 字";
+              continue;
+            }
+            if (evt.event === "delta") {
+              if (evt.data?.replace) {
+                finalText = evt.data.content || finalText;
+              } else {
+                finalText += evt.data.content || "";
+              }
+              renderResult(finalText, true);
+              resultCount.innerText = finalText.length + " 字";
+            }
+            if (evt.event === "final") {
+              finalText = evt.data.content || finalText;
+              renderResult(finalText, false);
+              resultCount.innerText = finalText.length + " 字";
+            }
+            if (evt.event === "done") {
+              return finalText;
+            }
+            if (evt.event === "error") {
+              const err = new Error(evt.data?.error || "处理失败，请再次尝试");
+              if (evt.data?.retryable === false) err.retryable = false;
+              throw err;
+            }
           }
         }
-      }
-      if (buffer.trim()) {
-        const evt = parseSSE(buffer);
-        if (evt) {
-          if (evt.event === "final") finalText = evt.data.content || finalText;
-          if (evt.event === "delta") finalText += evt.data.content || "";
+        if (buffer.trim()) {
+          const evt = parseSSE(buffer);
+          if (evt) {
+            if (evt.event === "final") finalText = evt.data.content || finalText;
+            if (evt.event === "delta") finalText += evt.data.content || "";
+          }
         }
-      }
-      if (!finalText.trim()) {
-        if (!receivedAnyData) {
-          throw new Error("上游未返回任何数据，请检查 API_MODEL 配置或稍后重试");
+        if (!finalText.trim()) {
+          if (!receivedAnyData) {
+            throw new Error("上游未返回任何数据，请检查 API_MODEL 配置或稍后重试");
+          }
+          throw new Error("上游返回空内容（收到 " + chunkCount + " 个数据块），可能是模型拒绝回答，请换个说法重试");
         }
-        throw new Error("上游返回空内容（收到 " + chunkCount + " 个数据块），可能是模型拒绝回答，请换个说法重试");
+        return finalText;
+      } catch (err) {
+        if (timedOut && err && err.name === "AbortError") {
+          throw new Error("请求超时：模型长时间没有响应，请重试或更换更快的模型");
+        }
+        throw err;
+      } finally {
+        clearTimeout(watchdog);
+        if (signal) signal.removeEventListener("abort", relayAbort);
       }
-      return finalText;
     }
     async function translateText(manual) {
       const text = sourceText.value.trim();
@@ -1434,7 +1925,7 @@ function getHtml(siteKey, turnstileEnabled) {
           return;
         } catch (err) {
           if (err.name === "AbortError") return;
-          if (attempt >= MAX_RETRY) {
+          if (err.retryable === false || attempt >= MAX_RETRY) {
             statusInfo.innerText = err?.message || "处理失败，请再次尝试";
             renderFriendlyError(err?.message);
             return;
