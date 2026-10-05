@@ -1184,9 +1184,14 @@ function normalizeWordMarkdownOutput(text, template = null) {
   t = t.replace(/([^\n])(?=#{1,6}\s*)/g, "$1\n");
   t = t.replace(/(^|\n)(#{1,6})(?=\S)/g, "$1$2 ");
   t = t.replace(/^(#{1,6}\s*[^#\n]+?)\s*(?:-|:|\uFF1A)\s*(.+)$/gm, "$1\n- $2");
-  t = t.replace(/([^\n\s])(?=[-*]\s+)/g, "$1\n");
+  // 只在"粘连的列表项"处断行（如 内容- 项目）。
+  // 不能匹配 * 号： "**be in** (处于…)" 的闭合 ** 后面跟着空格，
+  // 原本会把闭合星号当成列表标记，拆成 "**be in*" + "* (处于…)"。
+  t = t.replace(/([^\n\s-])(?=-[ \t])/g, "$1\n");
   t = t.replace(/([^\n\s])(?=\d+\.\s+)/g, "$1\n");
-  t = t.replace(/(^|\n)([-*])(?=\S)/g, "$1$2 ");
+  // 补全列表标记 "-" 后的空格（如 -项目 -> - 项目）。
+  // "*" 不做处理：行首的 *斜体* 会被误加空格变成 "* 斜体*"。
+  t = t.replace(/(^|\n)(-)(?=[^\s-])/g, "$1$2 ");
   const sections = getWordSectionNames(template);
   const normalizedToSection = new Map();
   for (const section of sections) {
