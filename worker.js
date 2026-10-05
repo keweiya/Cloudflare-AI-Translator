@@ -1343,12 +1343,23 @@ async function repairWordExamplesIfNeeded(text, ctx) {
     });
     const normalized = normalizeWordMarkdownOutput(cleaned, ctx.wordTemplate);
     if (!normalized) return draft;
+    // 修复结果必须保留原有小节结构，否则视为"改坏了"，直接回退草稿
+    if (wordSectionSignature(normalized) !== wordSectionSignature(draft)) return draft;
     return normalized;
   } catch {
     return draft;
   } finally {
     clearTimeout(timer);
   }
+}
+
+// 取所有标题行的规范化签名，用于判断结构是否被改动
+function wordSectionSignature(markdown) {
+  return String(markdown || "")
+    .split("\n")
+    .filter((line) => /^#{1,6}\s/.test(line))
+    .map((line) => normalizeWordSectionKey(line))
+    .join("|");
 }
 
 async function runWordExampleRepair(draft, ctx, signal) {
