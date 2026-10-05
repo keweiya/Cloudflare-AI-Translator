@@ -1868,6 +1868,12 @@ function getHtml(siteKey, turnstileEnabled) {
       background:radial-gradient(58% 100% at 50% 0,var(--brand-soft),transparent 72%);
     }
     button,input,select,textarea{font:inherit;color:inherit}
+    /* 去掉系统自带的按钮外观与触摸高亮（移动端点击时会出现方形灰块） */
+    button{appearance:none;-webkit-appearance:none;background:none;border:none;cursor:pointer}
+    html{-webkit-tap-highlight-color:transparent}
+    *,*::before,*::after{-webkit-tap-highlight-color:transparent}
+    /* 兜底：任何控件默认的直角焦点框都去掉，各组件改用跟随圆角的 box-shadow 焦点环 */
+    button:focus,select:focus,textarea:focus,input:focus,a:focus{outline:none}
     ::selection{background:var(--brand-soft)}
     .hidden{display:none !important}
     .sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
@@ -1887,7 +1893,10 @@ function getHtml(siteKey, turnstileEnabled) {
     }
     .btn:hover{border-color:var(--line-strong);background:var(--card-soft);transform:translateY(-1px)}
     .btn:active{transform:translateY(0)}
-    .btn:focus-visible{outline:2px solid var(--brand);outline-offset:2px}
+    /* 焦点环统一用 box-shadow：它会跟随 border-radius，
+       而 outline 在部分浏览器（Safari）里会画成直角矩形，与圆角界面不搭 */
+    .btn:focus{outline:none}
+    .btn:focus-visible{outline:none;box-shadow:0 0 0 1px var(--brand),0 0 0 4px var(--brand-soft)}
     .btn[disabled]{opacity:.55;cursor:not-allowed;transform:none}
     .btn-sm{height:30px;padding:0 10px;font-size:12.5px;border-radius:9px}
     .btn-icon{width:38px;padding:0;font-size:15px}
@@ -1898,6 +1907,7 @@ function getHtml(siteKey, turnstileEnabled) {
       box-shadow:0 8px 20px -10px var(--brand);
     }
     .btn-primary:hover{filter:brightness(1.06);background:linear-gradient(135deg,var(--brand),var(--brand-2))}
+    .btn-primary:focus-visible{outline:none;box-shadow:0 0 0 4px var(--brand-soft)}
 
     /* ---------- 验证闸门 ---------- */
     .gate{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px}
@@ -1949,6 +1959,7 @@ function getHtml(siteKey, turnstileEnabled) {
       font-size:13.5px;font-weight:520;cursor:pointer;white-space:nowrap;transition:border-color .15s,background .15s,box-shadow .15s;
     }
     .dd-btn:hover{border-color:var(--line-strong);background:var(--card)}
+    .dd-btn:focus{outline:none}
     .dd-btn:focus-visible,.dd[data-open="true"] .dd-btn{
       outline:none;border-color:var(--brand);box-shadow:0 0 0 3px var(--brand-soft);background:var(--card);
     }
@@ -1971,6 +1982,7 @@ function getHtml(siteKey, turnstileEnabled) {
       font-size:13.5px;text-align:left;cursor:pointer;color:var(--text);transition:background .12s;
     }
     .dd-opt:hover,.dd-opt:focus-visible{background:var(--brand-soft);outline:none}
+    .dd-opt:focus{outline:none}
     .dd-opt[aria-selected="true"]{color:var(--brand);font-weight:620;background:var(--brand-soft)}
     .dd-opt[aria-selected="true"]::after{content:"✓";font-size:12px}
 
@@ -2022,6 +2034,8 @@ function getHtml(siteKey, turnstileEnabled) {
       border-radius:99px;padding:5px 11px;font-size:12px;cursor:pointer;transition:.16s;
     }
     .chip:hover{color:var(--brand);border-color:var(--brand);background:var(--brand-soft);border-style:solid}
+    .chip:focus{outline:none}
+    .chip:focus-visible{outline:none;color:var(--brand);border-color:var(--brand);box-shadow:0 0 0 3px var(--brand-soft)}
     .kbd{
       display:inline-block;padding:1px 6px;border:1px solid var(--line);border-bottom-width:2px;
       border-radius:6px;background:var(--card);font-size:11px;color:var(--muted);font-family:inherit;
