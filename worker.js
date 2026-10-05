@@ -12,7 +12,7 @@ const LIVE_PUSH_INTERVAL_MS = 100;
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, Authorization",
+  "Access-Control-Allow-Headers": "Content-Type, Authorization, X-API-Key",
 };
 
 const JSON_HEADERS = {
@@ -47,6 +47,9 @@ export default {
     }
     if (url.pathname === "/api/translate/stream" && request.method === "POST") {
       return handleTranslateStream(request, env);
+    }
+    if (url.pathname === "/api/translate" && request.method === "POST") {
+      return handleApiTranslate(request, env);
     }
     return new Response("Not Found", { status: 404 });
   },
@@ -99,6 +102,142 @@ async function handleVerify(request, env) {
 // ============================================================================
 // 3. 翻译核心流程
 // ============================================================================
+// 组装翻译任务：校验入参、推断语言、构造提示词（流式接口与 API 接口共用）
+function buildTranslationPlan(input) {
+  const text = String((input && input.text) || "");
+  const requestedFrom = (input && input.from) || "auto";
+  const from = requestedFrom === "auto" ? inferSourceLangByText(text) : requestedFrom;
+  const to = String((input && input.to) || "zh");
+  const langProfile = detectTextLanguageProfile(text);
+  if (!text.trim()) return { error: "Please enter text to translate", status: 400 };
+  if (text.length > 12000) return { error: "Text is too long. Please keep it under 12000 characters.", status: 400 };
+  const isSingleWord = detectSingleWordQuery(text, from);
+  const hasMixedSource = from === "mixed" || langProfile.isMixed;
+  const isSameLang = from !== "auto" && !hasMixedSource && from === to;
+  if (isSameLang) {
+    return {
+      text: text, from: from, to: to,
+      isSingleWord: isSingleWord, hasMixedSource: hasMixedSource,
+      isSameLang: true, messages: [], wordTemplate: null, mode: "translate",
+    };
+  }
+
+  const isShortText = text.length < 300 && text.split('\n').length <= 5;
+  let messages = [];
+  let wordTemplate = null;
+
+  // 强制全局要求：禁止思考，只输出结果
+  const NO_THINKING_PROMPT = "\nCRITICAL INSTRUCTION: Do NOT perform thinking, analysis, or reasoning. Do NOT use <think> or <analysis> tags. Directly output the final translation result immediately.";
+
+  if (isSingleWord) {
+    wordTemplate = getWordExplainTemplate(to);
+    messages = [
+      {
+        role: "system",
+        content:
+          "You are a professional bilingual vocabulary assistant." + NO_THINKING_PROMPT + "\n" +
+          "Output structured markdown only.\n" +
+          "Use only unordered list items starting with '- '.\n" +
+          "Do not use numbered lists.\n" +
+          "Do not output explanations about your process.\n" +
+          "All section titles and descriptions must be in target language.\n" +
+          "IMPORTANT RULES:\n" +
+          "1. The SOURCE WORD is the English word given by the user. You are explaining THIS English word.\n" +
+          "2. The top heading (#) must be the DIRECT WORD-FOR-WORD translation, NOT a description or category.\n" +
+          "   CORRECT examples: '# 你好' for hello, '# 员工' for employees, '# 猫' for cat.\n" +
+          "   WRONG examples: '# 问候语' (this is a description, not a translation), '# [该词的中文对应词]' (placeholder).\n" +
+          "3. Meaning and usage descriptions should be written in target language, explaining the SOURCE English word.\n" +
+          "4. Collocations must be in the SOURCE language (English), with target language translation in parentheses.\n" +
+          "5. Example sentences must be in the SOURCE language (English), with target language translation in parentheses.",
+      },
+      {
+        role: "user",
+        content:
+          `The source word to explain is: "${text.trim()}" (English).\n` +
+          `Explain this English word in ${mapLangName(to)}.\n\n` +
+          `Use this exact structure:\n` +
+          `# [Most common ${mapLangName(to)} translation of "${text.trim()}"]\n\n` +
+          `## ${wordTemplate.meaning}\n` +
+          `- (describe the meaning of the English word "${text.trim()}" in ${mapLangName(to)})\n` +
+          `## ${wordTemplate.usage}\n` +
+          `- (explain part of speech and usage of "${text.trim()}" in ${mapLangName(to)})\n` +
+          `## ${wordTemplate.collocations}\n` +
+          `- English collocation (${mapLangName(to)} translation)\n` +
+          `## ${wordTemplate.examples}\n` +
+          `- English example sentence. (${mapLangName(to)} translation)\n\n` +
+          `Replace ALL bracket placeholders with actual content.\n` +
+          `Except the top title, only use \`##\` headings and \`-\` bullet items.`,
+      },
+    ];
+    if (messages[0]?.role === "system") {
+      messages[0].content += "\n\n" + buildWordExampleRule(from, to, wordTemplate);
+    }
+  } else if (isShortText) {
+    messages = [
+      {
+        role: "system",
+        content:
+          "You are a precise technical translator." + NO_THINKING_PROMPT + "\n" +
+          "Output ONLY the translation result in the target language.\n" +
+          "TRANSLATE EVERY PART of the input into the target language.\n" +
+          "If input is mixed-language (e.g. Chinese + English), translate ALL of it.\n" +
+          "Do not output explanations, reasoning, annotations, or extra notes.\n" +
+          "Never leave any part untranslated.",
+      },
+      {
+        role: "user",
+        content:
+          "Translate ALL of the following text entirely into " + mapLangName(to) + ".\n" +
+          "Every single word must be translated into " + mapLangName(to) + ". Do not skip any part.\n\n" +
+          "Source text:\n" + text,
+      },
+    ];
+  } else {
+    messages = [
+      {
+        role: "system",
+        content:
+          "You are a technical document translator." + NO_THINKING_PROMPT + "\n" +
+          "Preserve original paragraph structure and markdown format.\n" +
+          "TRANSLATE EVERY PART of the input into the target language.\n" +
+          "If input contains mixed languages, translate ALL fragments.\n" +
+          "Output translation only, without extra commentary.\n" +
+          "Never leave any sentence or phrase untranslated.",
+      },
+      {
+        role: "user",
+        content:
+          "Translate ALL of the following text entirely into " + mapLangName(to) + ".\n" +
+          "Every paragraph, every sentence must be in " + mapLangName(to) + ".\n\n" +
+          "Source text:\n" + text,
+      },
+    ];
+  }
+  if (messages[0]?.role === "system") {
+    messages[0].content += "\n\n" + buildLanguageGuard(from, to, isSingleWord ? "word" : "translate");
+    if (!isSingleWord && hasMixedSource) {
+      messages[0].content +=
+        "\n\nMixed-language handling (MUST follow):\n" +
+        "- Input may contain multiple languages in one sentence.\n" +
+        "- Translate all translatable parts into target language.\n" +
+        "- Do not skip English/foreign fragments just because some parts are already in target language.\n" +
+        "- Keep essential technical terms only when translating them would reduce clarity.";
+    }
+  }
+
+  return {
+    text: text,
+    from: from,
+    to: to,
+    isSingleWord: isSingleWord,
+    hasMixedSource: hasMixedSource,
+    isSameLang: false,
+    messages: messages,
+    wordTemplate: wordTemplate,
+    mode: isSingleWord ? "word" : "translate",
+  };
+}
+
 async function handleTranslateStream(request, env) {
   try {
     const turnstileEnabled = isTurnstileEnabled(env);
@@ -118,123 +257,15 @@ async function handleTranslateStream(request, env) {
       if (!validSession) return json({ error: "Session invalid, please verify again" }, 401);
     }
     const body = await request.json();
-    const text = body?.text || "";
-    const requestedFrom = body?.from || "auto";
-    const from = requestedFrom === "auto" ? inferSourceLangByText(text) : requestedFrom;
-    const to = body?.to || "zh";
-    const langProfile = detectTextLanguageProfile(text);
-    if (!text.trim()) return json({ error: "Please enter text to translate" }, 400);
-    if (text.length > 12000) return json({ error: "Text is too long. Please keep it under 12000 characters." }, 400);
-    const isSingleWord = detectSingleWordQuery(text, from);
-    const hasMixedSource = from === "mixed" || langProfile.isMixed;
-    const isSameLang = from !== "auto" && !hasMixedSource && from === to;
-    if (isSameLang) {
-      return createImmediateTranslateStream(text);
-    }
-
-    const isShortText = text.length < 300 && text.split('\n').length <= 5;
-    let messages = [];
-    let wordTemplate = null;
-
-    // 强制全局要求：禁止思考，只输出结果
-    const NO_THINKING_PROMPT = "\nCRITICAL INSTRUCTION: Do NOT perform thinking, analysis, or reasoning. Do NOT use <think> or <analysis> tags. Directly output the final translation result immediately.";
-
-    if (isSingleWord) {
-      wordTemplate = getWordExplainTemplate(to);
-      messages = [
-        {
-          role: "system",
-          content:
-            "You are a professional bilingual vocabulary assistant." + NO_THINKING_PROMPT + "\n" +
-            "Output structured markdown only.\n" +
-            "Use only unordered list items starting with '- '.\n" +
-            "Do not use numbered lists.\n" +
-            "Do not output explanations about your process.\n" +
-            "All section titles and descriptions must be in target language.\n" +
-            "IMPORTANT RULES:\n" +
-            "1. The SOURCE WORD is the English word given by the user. You are explaining THIS English word.\n" +
-            "2. The top heading (#) must be the DIRECT WORD-FOR-WORD translation, NOT a description or category.\n" +
-            "   CORRECT examples: '# 你好' for hello, '# 员工' for employees, '# 猫' for cat.\n" +
-            "   WRONG examples: '# 问候语' (this is a description, not a translation), '# [该词的中文对应词]' (placeholder).\n" +
-            "3. Meaning and usage descriptions should be written in target language, explaining the SOURCE English word.\n" +
-            "4. Collocations must be in the SOURCE language (English), with target language translation in parentheses.\n" +
-            "5. Example sentences must be in the SOURCE language (English), with target language translation in parentheses.",
-        },
-        {
-          role: "user",
-          content:
-            `The source word to explain is: "${text.trim()}" (English).\n` +
-            `Explain this English word in ${mapLangName(to)}.\n\n` +
-            `Use this exact structure:\n` +
-            `# [Most common ${mapLangName(to)} translation of "${text.trim()}"]\n\n` +
-            `## ${wordTemplate.meaning}\n` +
-            `- (describe the meaning of the English word "${text.trim()}" in ${mapLangName(to)})\n` +
-            `## ${wordTemplate.usage}\n` +
-            `- (explain part of speech and usage of "${text.trim()}" in ${mapLangName(to)})\n` +
-            `## ${wordTemplate.collocations}\n` +
-            `- English collocation (${mapLangName(to)} translation)\n` +
-            `## ${wordTemplate.examples}\n` +
-            `- English example sentence. (${mapLangName(to)} translation)\n\n` +
-            `Replace ALL bracket placeholders with actual content.\n` +
-            `Except the top title, only use \`##\` headings and \`-\` bullet items.`,
-        },
-      ];
-      if (messages[0]?.role === "system") {
-        messages[0].content += "\n\n" + buildWordExampleRule(from, to, wordTemplate);
-      }
-    } else if (isShortText) {
-      messages = [
-        {
-          role: "system",
-          content:
-            "You are a precise technical translator." + NO_THINKING_PROMPT + "\n" +
-            "Output ONLY the translation result in the target language.\n" +
-            "TRANSLATE EVERY PART of the input into the target language.\n" +
-            "If input is mixed-language (e.g. Chinese + English), translate ALL of it.\n" +
-            "Do not output explanations, reasoning, annotations, or extra notes.\n" +
-            "Never leave any part untranslated.",
-        },
-        {
-          role: "user",
-          content:
-            "Translate ALL of the following text entirely into " + mapLangName(to) + ".\n" +
-            "Every single word must be translated into " + mapLangName(to) + ". Do not skip any part.\n\n" +
-            "Source text:\n" + text,
-        },
-      ];
-    } else {
-      messages = [
-        {
-          role: "system",
-          content:
-            "You are a technical document translator." + NO_THINKING_PROMPT + "\n" +
-            "Preserve original paragraph structure and markdown format.\n" +
-            "TRANSLATE EVERY PART of the input into the target language.\n" +
-            "If input contains mixed languages, translate ALL fragments.\n" +
-            "Output translation only, without extra commentary.\n" +
-            "Never leave any sentence or phrase untranslated.",
-        },
-        {
-          role: "user",
-          content:
-            "Translate ALL of the following text entirely into " + mapLangName(to) + ".\n" +
-            "Every paragraph, every sentence must be in " + mapLangName(to) + ".\n\n" +
-            "Source text:\n" + text,
-        },
-      ];
-    }
-    if (messages[0]?.role === "system") {
-      messages[0].content += "\n\n" + buildLanguageGuard(from, to, isSingleWord ? "word" : "translate");
-      if (!isSingleWord && hasMixedSource) {
-        messages[0].content +=
-          "\n\nMixed-language handling (MUST follow):\n" +
-          "- Input may contain multiple languages in one sentence.\n" +
-          "- Translate all translatable parts into target language.\n" +
-          "- Do not skip English/foreign fragments just because some parts are already in target language.\n" +
-          "- Keep essential technical terms only when translating them would reduce clarity.";
-      }
-    }
-
+    const plan = buildTranslationPlan(body || {});
+    if (plan.error) return json({ error: plan.error }, plan.status);
+    if (plan.isSameLang) return createImmediateTranslateStream(plan.text);
+    const text = plan.text;
+    const from = plan.from;
+    const to = plan.to;
+    const isSingleWord = plan.isSingleWord;
+    const wordTemplate = plan.wordTemplate;
+    const messages = plan.messages;
     const targetModel = upstream.model;
     const timeouts = resolveTimeouts(env);
     const upstreamCtx = {
@@ -472,16 +503,11 @@ async function handleTranslateStream(request, env) {
             return;
           }
 
-          const cleaned = cleanupModelOutput(fullText, {
-            stripMetaNotes: !isSingleWord,
-            allowPartialReasoning: false,
+          let finalOut = finalizeOutput(fullText, {
+            isSingleWord: isSingleWord,
+            wordTemplate: wordTemplate,
+            text: text,
           });
-
-          let finalOut = isSingleWord ? normalizeWordMarkdownOutput(cleaned, wordTemplate) : cleaned;
-
-          if (!finalOut.trim()) {
-            finalOut = isSingleWord ? `# 暂无释义\n\n- 抱歉，未能为该输入生成有效的词汇解析。` : text;
-          }
 
           // 先把结果发给前端，再做可选的例句修复；这样二次调用再慢也不会让请求卡住
           send("final", { content: finalOut });
@@ -549,6 +575,249 @@ async function handleTranslateStream(request, env) {
 }
 
 // ============================================================================
+// ============================================================================
+// 3.5 对外开放 API：POST /api/translate（JSON，需在后台配置 API_KEYS）
+//
+//   请求头：Authorization: Bearer <key>   或   X-API-Key: <key>
+//   请求体：{ "text": "hello", "from": "auto", "to": "zh" }
+//   响应体：{ ok: true, result: "你好", mode: "word", model: "...", from, to }
+//
+//   未配置 API_KEYS 时该接口直接关闭（返回 403），避免变成公开的免费代理。
+// ============================================================================
+function getApiKeys(env) {
+  return String((env && (env.API_KEYS || env.TRANSLATE_API_KEY)) || "")
+    .split(",")
+    .map((k) => k.trim())
+    .filter(Boolean);
+}
+
+// 定时安全比较，避免通过响应时间逐字节猜测密钥
+function safeEqual(a, b) {
+  const x = String(a || "");
+  const y = String(b || "");
+  if (x.length !== y.length) return false;
+  let diff = 0;
+  for (let i = 0; i < x.length; i++) diff |= x.charCodeAt(i) ^ y.charCodeAt(i);
+  return diff === 0;
+}
+
+function extractApiKey(request) {
+  const auth = request.headers.get("Authorization") || "";
+  if (/^bearer\s+/i.test(auth)) return auth.replace(/^bearer\s+/i, "").trim();
+  return (request.headers.get("X-API-Key") || "").trim();
+}
+
+function isAuthorizedApi(request, env) {
+  const keys = getApiKeys(env);
+  if (!keys.length) return false;
+  const provided = extractApiKey(request);
+  if (!provided) return false;
+  return keys.some((key) => safeEqual(key, provided));
+}
+
+// 把可能返回流的上游结果读成完整文本
+async function readStreamToText(stream) {
+  const reader = stream.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let out = "";
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    if (!value || !value.length) continue;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop() || "";
+    for (const line of lines) {
+      const delta = extractStreamDelta(line);
+      if (delta) out += delta;
+    }
+  }
+  if (buffer.trim()) {
+    const rest = extractStreamDelta(buffer);
+    if (rest) out += rest;
+  }
+  return out;
+}
+
+// 一次性（非流式）调用上游，返回完整文本
+async function requestUpstreamText(ctx, signal) {
+  if (ctx.useCFAI) {
+    const result = await raceWithSignal(ctx.env.AI.run(ctx.model, buildCFInputs(ctx, false, true)), signal);
+    if (result && typeof result.getReader === "function") return await readStreamToText(result);
+    if (result && result.body && typeof result.body.getReader === "function") {
+      return await readStreamToText(result.body);
+    }
+    return extractResultText(result);
+  }
+  const res = await fetch(stripSlash(ctx.baseUrl) + "/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: "Bearer " + ctx.apiKey,
+    },
+    body: JSON.stringify({
+      model: ctx.model,
+      temperature: 0.1,
+      stream: false,
+      messages: ctx.messages,
+    }),
+    signal,
+  });
+  if (!res.ok) {
+    let detail = "";
+    try {
+      detail = (await res.text()).slice(0, 300);
+    } catch {}
+    const err = new Error(detail || "HTTP Error " + res.status);
+    err.status = res.status;
+    throw err;
+  }
+  const data = await res.json();
+  return textOf(data?.choices?.[0]?.message?.content) || extractResultText(data);
+}
+
+// 带重试与语言自检的非流式调用
+async function runUpstreamToString(ctx, timeouts, options) {
+  const deadline = Date.now() + timeouts.totalMs;
+  let strictLanguage = false;
+  let lastError = null;
+  for (let attempt = 1; attempt <= timeouts.maxAttempts; attempt++) {
+    if (Date.now() >= deadline) {
+      lastError = lastError || new Error("Upstream request exceeded the total time limit.");
+      break;
+    }
+    const budget = Math.max(3000, Math.min(timeouts.totalMs, deadline - Date.now()));
+    const ac = new AbortController();
+    const timer = setTimeout(() => {
+      try {
+        ac.abort(new Error("Upstream attempt timed out"));
+      } catch {}
+    }, budget);
+    try {
+      const messages = strictLanguage ? buildStrictLanguageMessages(ctx.messages, options.to) : ctx.messages;
+      const text = await requestUpstreamText({ ...ctx, messages }, ac.signal);
+      if (!text.trim()) throw new Error("Upstream returned no usable text tokens.");
+      if (!options.isSingleWord && isOutputLanguageMismatch(stripReasoningArtifacts(text, true), options.to)) {
+        if (attempt < timeouts.maxAttempts) {
+          strictLanguage = true;
+          throw new Error("Output language mismatch, retrying with a stricter prompt.");
+        }
+        throw new Error("Model kept answering in the wrong language.");
+      }
+      return { text: text, error: null };
+    } catch (err) {
+      lastError = err;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  return { text: "", error: lastError || new Error("Upstream service error.") };
+}
+
+// 统一的输出整理（流式与非流式共用）
+function finalizeOutput(rawText, plan) {
+  const isSingleWord = !!(plan && plan.isSingleWord);
+  const cleaned = cleanupModelOutput(rawText, {
+    stripMetaNotes: !isSingleWord,
+    allowPartialReasoning: false,
+  });
+  let out = isSingleWord ? normalizeWordMarkdownOutput(cleaned, plan.wordTemplate) : cleaned;
+  if (!out.trim()) {
+    out = isSingleWord
+      ? "# 暂无释义\n\n- 抱歉，未能为该输入生成有效的词汇解析。"
+      : String((plan && plan.text) || "");
+  }
+  return out;
+}
+
+async function handleApiTranslate(request, env) {
+  try {
+    if (!getApiKeys(env).length) {
+      return json({ error: "API 未启用：请先在 Worker 环境变量中配置 API_KEYS" }, 403);
+    }
+    if (!isAuthorizedApi(request, env)) {
+      return json({ error: "无效的 API Key（请使用 Authorization: Bearer <key> 或 X-API-Key 请求头）" }, 401);
+    }
+    const upstream = resolveUpstreamConfig(env);
+    if (upstream.useCFAI) {
+      if (!env.AI || !upstream.model) return json({ error: "CF AI configuration incomplete" }, 500);
+    } else if (!upstream.baseUrl || !upstream.apiKey || !upstream.model) {
+      return json({ error: "Custom API configuration incomplete" }, 500);
+    }
+    let body = null;
+    try {
+      body = await request.json();
+    } catch {
+      return json({ error: '请求体必须是 JSON，例如 {"text":"hello","to":"zh"}' }, 400);
+    }
+    const plan = buildTranslationPlan(body || {});
+    if (plan.error) return json({ error: plan.error }, plan.status);
+    const timeouts = resolveTimeouts(env);
+    if (plan.isSameLang) {
+      return json({
+        ok: true, result: plan.text, mode: plan.mode, model: upstream.model,
+        from: plan.from, to: plan.to, unchanged: true,
+      });
+    }
+    const ctx = {
+      useCFAI: upstream.useCFAI,
+      baseUrl: upstream.baseUrl,
+      apiKey: upstream.apiKey,
+      model: upstream.model,
+      maxTokens: upstream.maxTokens,
+      extraParams: upstream.extraParams,
+      messages: plan.messages,
+      env,
+    };
+    const outcome = await runUpstreamToString(ctx, timeouts, {
+      to: plan.to,
+      isSingleWord: plan.isSingleWord,
+    });
+    if (outcome.error) {
+      console.error(
+        JSON.stringify({
+          timestamp: new Date().toISOString(),
+          level: "ERROR",
+          event: "API_TRANSLATE_FAILED",
+          message: outcome.error && outcome.error.message ? outcome.error.message : String(outcome.error),
+          model: upstream.model,
+        })
+      );
+      return json({ error: describeUpstreamFailure(outcome.error) }, 502);
+    }
+    let finalOut = finalizeOutput(outcome.text, plan);
+    if (plan.isSingleWord) {
+      finalOut = await repairWordExamplesIfNeeded(finalOut, {
+        from: plan.from,
+        to: plan.to,
+        wordTemplate: plan.wordTemplate,
+        env,
+        model: upstream.model,
+        maxTokens: upstream.maxTokens,
+        extraParams: upstream.extraParams,
+        useCFAI: upstream.useCFAI,
+        baseUrl: upstream.baseUrl,
+        apiKey: upstream.apiKey,
+        timeoutMs: timeouts.repairMs,
+      });
+    }
+    return json({
+      ok: true, result: finalOut, mode: plan.mode, model: upstream.model,
+      from: plan.from, to: plan.to,
+    });
+  } catch (err) {
+    console.error(
+      JSON.stringify({
+        timestamp: new Date().toISOString(),
+        level: "ERROR",
+        event: "API_TRANSLATE_CRASH",
+        message: err && err.message ? err.message : String(err),
+      })
+    );
+    return json({ error: "Processing failed. Please retry." }, 500);
+  }
+}
 // 4. 上游配置、超时与请求执行
 // ============================================================================
 function envNumber(env, key, fallback) {
@@ -1671,16 +1940,42 @@ function getHtml(siteKey, turnstileEnabled) {
       padding:12px;margin-bottom:18px;
       background:var(--card);border:1px solid var(--line);border-radius:var(--r-md);box-shadow:var(--shadow-sm);
     }
-    .sel{
-      appearance:none;-webkit-appearance:none;
-      height:38px;padding:0 32px 0 14px;border:1px solid var(--line);border-radius:var(--r-sm);
-      background:var(--card-soft) url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%2364748b' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>") no-repeat right 11px center;
-      font-size:13.5px;font-weight:500;cursor:pointer;transition:border-color .15s,background .15s;
+    /* ---------- 自定义下拉框（原生 select 的弹出层是方角且无法定制，这里完全自绘） ---------- */
+    .dd{position:relative;min-width:136px}
+    .native-select{position:absolute;width:1px;height:1px;padding:0;border:0;opacity:0;pointer-events:none;clip:rect(0 0 0 0)}
+    .dd-btn{
+      display:flex;align-items:center;justify-content:space-between;gap:10px;width:100%;height:40px;
+      padding:0 13px;border:1px solid var(--line);border-radius:12px;background:var(--card-soft);
+      font-size:13.5px;font-weight:520;cursor:pointer;white-space:nowrap;transition:border-color .15s,background .15s,box-shadow .15s;
     }
-    .sel:hover{border-color:var(--line-strong)}
-    .sel:focus{outline:none;border-color:var(--brand);box-shadow:0 0 0 3px var(--brand-soft)}
+    .dd-btn:hover{border-color:var(--line-strong);background:var(--card)}
+    .dd-btn:focus-visible,.dd[data-open="true"] .dd-btn{
+      outline:none;border-color:var(--brand);box-shadow:0 0 0 3px var(--brand-soft);background:var(--card);
+    }
+    .dd-value{overflow:hidden;text-overflow:ellipsis}
+    .dd-caret{
+      flex:none;width:0;height:0;border-left:5px solid transparent;border-right:5px solid transparent;
+      border-top:5px solid var(--faint);transition:transform .18s;
+    }
+    .dd[data-open="true"] .dd-caret{transform:rotate(180deg)}
+    .dd-menu{
+      position:absolute;z-index:35;top:calc(100% + 6px);left:0;right:0;padding:6px;display:none;
+      background:var(--card);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow-lg);
+      max-height:min(320px,62vh);overflow:auto;
+    }
+    .dd[data-open="true"] .dd-menu{display:block;animation:pop .16s ease-out both}
+    @keyframes pop{from{opacity:0;transform:translateY(-5px) scale(.98)}to{opacity:1;transform:none}}
+    .dd-opt{
+      display:flex;align-items:center;justify-content:space-between;gap:8px;width:100%;
+      min-height:38px;padding:8px 11px;border:none;border-radius:9px;background:transparent;
+      font-size:13.5px;text-align:left;cursor:pointer;color:var(--text);transition:background .12s;
+    }
+    .dd-opt:hover,.dd-opt:focus-visible{background:var(--brand-soft);outline:none}
+    .dd-opt[aria-selected="true"]{color:var(--brand);font-weight:620;background:var(--brand-soft)}
+    .dd-opt[aria-selected="true"]::after{content:"✓";font-size:12px}
+
     .lang-bar-right{margin-left:auto;display:flex;gap:8px}
-    .lang-arrow{color:var(--faint);font-size:15px;user-select:none}
+    .lbl-short{display:none}
 
     .workspace{display:grid;grid-template-columns:1fr 1fr;gap:18px;align-items:start}
     .pane{
@@ -1689,17 +1984,20 @@ function getHtml(siteKey, turnstileEnabled) {
       overflow:hidden;transition:border-color .2s,box-shadow .2s;
     }
     .pane:focus-within{border-color:var(--line-strong);box-shadow:var(--shadow-lg)}
+    /* 左右两栏的头/尾固定同高，保证两边的内容区上下对齐 */
     .pane-head{
       display:flex;align-items:center;justify-content:space-between;gap:10px;
-      padding:12px 16px;border-bottom:1px solid var(--line);background:var(--card-soft);
+      height:52px;padding:0 16px;flex:none;
+      border-bottom:1px solid var(--line);background:var(--card-soft);
     }
     .pane-title{display:flex;align-items:center;gap:8px;font-size:13px;font-weight:620;letter-spacing:.3px;color:var(--muted)}
     .pane-title::before{content:"";width:3px;height:14px;border-radius:2px;background:linear-gradient(180deg,var(--brand),var(--brand-2))}
-    .pane-meta{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--faint)}
+    .pane-meta{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--faint);min-width:0}
     .pane-body{flex:1;display:flex;flex-direction:column;padding:16px;min-height:0}
     .pane-foot{
       display:flex;align-items:center;justify-content:space-between;gap:10px;
-      padding:10px 16px;border-top:1px solid var(--line);background:var(--card-soft);
+      height:40px;padding:0 16px;flex:none;
+      border-top:1px solid var(--line);background:var(--card-soft);
       font-size:11.5px;color:var(--faint);
     }
 
@@ -1829,15 +2127,38 @@ function getHtml(siteKey, turnstileEnabled) {
       .lang-bar-right{width:100%;margin-left:0}
       .lang-bar-right .btn{flex:1}
     }
-    @media (max-width:560px){
-      .wrap{padding:16px 14px 48px}
-      .topbar-inner{padding:10px 14px}
+    /* ---------- 手机适配 ---------- */
+    @media (max-width:620px){
+      .wrap{padding:14px 12px calc(40px + env(safe-area-inset-bottom,0px))}
+      .topbar-inner{padding:10px 12px;gap:8px}
       .brand-text span{display:none}
-      .pane-head,.pane-body,.pane-foot{padding-left:13px;padding-right:13px}
-      .editor,.result{font-size:15px}
+      .lbl-full{display:none}
+      .lbl-short{display:inline}
+      .topbar-actions{gap:6px}
+      .btn{height:40px;padding:0 12px}
+      .btn-icon{width:40px}
+      /* 两个语言框并排平分，中间一个切换按钮 */
+      .lang-bar{padding:10px;gap:8px;border-radius:var(--r-md)}
+      .dd{flex:1 1 0;min-width:0}
+      .dd-btn{height:42px;font-size:13.5px}
+      .dd-menu{left:auto;right:auto;width:max(100%,180px)}
+      .lang-bar-right{display:none}
+      /* 手机上把"立即翻译"做成整行主按钮 */
+      .mobile-go{display:flex}
+      .pane-head{height:48px;padding:0 13px}
+      .pane-foot{height:38px;padding:0 13px}
+      .pane-body{padding:13px}
+      /* ≥16px 可避免 iOS 聚焦时自动放大页面 */
+      .editor,.result{font-size:16px}
+      .pane{min-height:300px}
+      .editor,.result{min-height:170px}
+      .pane-meta .btn-sm{height:28px;padding:0 9px}
       .drawer{width:100%;max-width:100%}
-      .gate-card{padding:24px 18px}
+      .drawer-search input{height:40px;font-size:16px}
+      .gate-card{padding:24px 18px;border-radius:18px}
+      .toast{bottom:calc(20px + env(safe-area-inset-bottom,0px))}
     }
+    .mobile-go{display:none;width:100%;height:46px;font-size:15px;margin-top:2px}
     @media (prefers-reduced-motion:reduce){
       *,*::before,*::after{animation-duration:.001ms !important;animation-iteration-count:1 !important;transition-duration:.001ms !important}
     }
@@ -1879,7 +2200,7 @@ function getHtml(siteKey, turnstileEnabled) {
         </div>
         <div class="topbar-actions">
           <button id="themeBtn" class="btn btn-icon" type="button" title="切换主题" aria-label="切换主题">◐</button>
-          <button id="historyBtn" class="btn" type="button">历史记录</button>
+          <button id="historyBtn" class="btn" type="button"><span class="lbl-full">历史记录</span><span class="lbl-short">历史</span></button>
           <button id="clearBtn" class="btn" type="button">清空</button>
         </div>
       </div>
@@ -1887,25 +2208,40 @@ function getHtml(siteKey, turnstileEnabled) {
 
     <main class="wrap">
       <section class="lang-bar">
-        <label class="sr" for="fromLang">源语言</label>
-        <select id="fromLang" class="sel">
-          <option value="auto">自动检测</option>
-          <option value="zh">中文</option>
-          <option value="en">英文</option>
-          <option value="ja">日文</option>
-          <option value="ko">韩文</option>
-        </select>
+        <div class="dd" data-dd="from" data-open="false">
+          <label class="sr" for="fromLang">源语言</label>
+          <select id="fromLang" class="native-select" tabindex="-1" aria-hidden="true">
+            <option value="auto">自动检测</option>
+            <option value="zh">中文</option>
+            <option value="en">英文</option>
+            <option value="ja">日文</option>
+            <option value="ko">韩文</option>
+          </select>
+          <button class="dd-btn" type="button" aria-haspopup="listbox" aria-expanded="false">
+            <span class="dd-value">自动检测</span>
+            <span class="dd-caret" aria-hidden="true"></span>
+          </button>
+          <div class="dd-menu" role="listbox" aria-label="源语言"></div>
+        </div>
         <button id="swapBtn" class="btn btn-icon" type="button" title="切换语言" aria-label="切换语言">⇄</button>
-        <label class="sr" for="toLang">目标语言</label>
-        <select id="toLang" class="sel">
-          <option value="zh" selected>中文</option>
-          <option value="en">英文</option>
-          <option value="ja">日文</option>
-          <option value="ko">韩文</option>
-        </select>
+        <div class="dd" data-dd="to" data-open="false">
+          <label class="sr" for="toLang">目标语言</label>
+          <select id="toLang" class="native-select" tabindex="-1" aria-hidden="true">
+            <option value="zh" selected>中文</option>
+            <option value="en">英文</option>
+            <option value="ja">日文</option>
+            <option value="ko">韩文</option>
+          </select>
+          <button class="dd-btn" type="button" aria-haspopup="listbox" aria-expanded="false">
+            <span class="dd-value">中文</span>
+            <span class="dd-caret" aria-hidden="true"></span>
+          </button>
+          <div class="dd-menu" role="listbox" aria-label="目标语言"></div>
+        </div>
         <div class="lang-bar-right">
           <button id="goBtn" class="btn btn-primary" type="button">立即翻译</button>
         </div>
+        <button id="goBtnMobile" class="btn btn-primary mobile-go" type="button">立即翻译</button>
       </section>
 
       <section class="workspace">
@@ -2008,6 +2344,7 @@ function getHtml(siteKey, turnstileEnabled) {
     const examples = byId("examples");
 
     initTheme();
+    initDropdowns();
     bindEvents();
     renderHistory();
     renderEmptyResult();
@@ -2035,6 +2372,7 @@ function getHtml(siteKey, turnstileEnabled) {
       byId("historyBtn").addEventListener("click", openHistory);
       byId("clearBtn").addEventListener("click", clearAll);
       byId("goBtn").addEventListener("click", function () { translateText(true); });
+      byId("goBtnMobile").addEventListener("click", function () { translateText(true); });
       byId("swapBtn").addEventListener("click", swapLanguage);
       byId("copyBtn").addEventListener("click", copyResult);
       byId("clearHistoryBtn").addEventListener("click", clearHistory);
@@ -2080,7 +2418,7 @@ function getHtml(siteKey, turnstileEnabled) {
         if (item) loadHistory(item.getAttribute("data-id"));
       });
       document.addEventListener("keydown", function (e) {
-        if (e.key === "Escape") closeHistory();
+        if (e.key === "Escape") { closeDropdowns(); closeHistory(); }
       });
       window.addEventListener("resize", function () {
         autoGrowTextarea();
@@ -2090,6 +2428,112 @@ function getHtml(siteKey, turnstileEnabled) {
 
     function syncExampleChips() {
       examples.classList.toggle("hidden", !!sourceText.value.trim());
+    }
+
+    /* ---------------- 自定义下拉框 ----------------
+       原生 <select> 的弹出层由系统绘制，圆角/配色都无法匹配界面，
+       这里保留隐藏的原生 select 作为取值来源，另外自绘一套按钮 + 菜单。 */
+    function initDropdowns() {
+      const list = document.querySelectorAll("[data-dd]");
+      for (let i = 0; i < list.length; i++) {
+        (function (dd) {
+          const select = dd.querySelector("select");
+          const btn = dd.querySelector(".dd-btn");
+          const menu = dd.querySelector(".dd-menu");
+          if (!select || !btn || !menu) return;
+          menu.innerHTML = "";
+          for (let j = 0; j < select.options.length; j++) {
+            const opt = select.options[j];
+            const item = document.createElement("button");
+            item.type = "button";
+            item.className = "dd-opt";
+            item.setAttribute("role", "option");
+            item.setAttribute("data-value", opt.value);
+            item.textContent = opt.textContent;
+            menu.appendChild(item);
+          }
+          btn.addEventListener("click", function (e) {
+            e.stopPropagation();
+            toggleDropdown(dd);
+          });
+          menu.addEventListener("click", function (e) {
+            const opt = e.target.closest(".dd-opt");
+            if (!opt) return;
+            e.stopPropagation();
+            const value = opt.getAttribute("data-value");
+            if (select.value !== value) {
+              select.value = value;
+              syncDropdowns();
+              select.dispatchEvent(new Event("change", { bubbles: true }));
+            } else {
+              syncDropdowns();
+            }
+            closeDropdowns();
+            btn.focus();
+          });
+          btn.addEventListener("keydown", function (e) {
+            if (e.key === "Escape") { closeDropdowns(); return; }
+            if (e.key === "ArrowDown" || e.key === "ArrowUp" || e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              if (dd.getAttribute("data-open") === "true") {
+                const current = menu.querySelector('.dd-opt[aria-selected="true"]') || menu.querySelector(".dd-opt");
+                if (current) current.focus();
+              } else {
+                toggleDropdown(dd);
+              }
+            }
+          });
+          menu.addEventListener("keydown", function (e) {
+            const opts = Array.prototype.slice.call(menu.querySelectorAll(".dd-opt"));
+            const idx = opts.indexOf(document.activeElement);
+            if (e.key === "Escape") { e.preventDefault(); closeDropdowns(); btn.focus(); return; }
+            if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+              e.preventDefault();
+              const next = (idx + (e.key === "ArrowDown" ? 1 : -1) + opts.length) % opts.length;
+              if (opts[next]) opts[next].focus();
+              return;
+            }
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              if (idx !== -1) opts[idx].click();
+            }
+          });
+        })(list[i]);
+      }
+      document.addEventListener("click", closeDropdowns);
+      syncDropdowns();
+    }
+    function toggleDropdown(dd) {
+      const isOpen = dd.getAttribute("data-open") === "true";
+      closeDropdowns();
+      if (isOpen) return;
+      dd.setAttribute("data-open", "true");
+      const btn = dd.querySelector(".dd-btn");
+      if (btn) btn.setAttribute("aria-expanded", "true");
+    }
+    function closeDropdowns() {
+      const list = document.querySelectorAll("[data-dd]");
+      for (let i = 0; i < list.length; i++) {
+        list[i].setAttribute("data-open", "false");
+        const btn = list[i].querySelector(".dd-btn");
+        if (btn) btn.setAttribute("aria-expanded", "false");
+      }
+    }
+    function syncDropdowns() {
+      const list = document.querySelectorAll("[data-dd]");
+      for (let i = 0; i < list.length; i++) {
+        const dd = list[i];
+        const select = dd.querySelector("select");
+        const label = dd.querySelector(".dd-value");
+        if (!select || !label) continue;
+        const opt = select.options[select.selectedIndex];
+        if (opt) label.textContent = opt.textContent;
+        const items = dd.querySelectorAll(".dd-opt");
+        for (let j = 0; j < items.length; j++) {
+          const on = items[j].getAttribute("data-value") === select.value;
+          items[j].setAttribute("aria-selected", on ? "true" : "false");
+        }
+      }
     }
     function sleep(ms) {
       return new Promise(function (resolve) { setTimeout(resolve, ms); });
@@ -2205,6 +2649,7 @@ function getHtml(siteKey, turnstileEnabled) {
       const tmp = fromLang.value;
       fromLang.value = toLang.value;
       toLang.value = tmp;
+      syncDropdowns();
       if (sourceText.value.trim()) immediateRetranslate();
     }
 
@@ -2548,6 +2993,7 @@ function getHtml(siteKey, turnstileEnabled) {
       if (!item) return;
       fromLang.value = item.from || "auto";
       toLang.value = item.to || "zh";
+      syncDropdowns();
       sourceText.value = item.source || "";
       sourceCount.innerText = sourceText.value.length + " 字";
       setMode(item.mode);

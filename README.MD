@@ -101,6 +101,74 @@ npx wrangler deploy
 https://playground.ai.cloudflare.com/?model=@cf/zai-org/glm-4.7-flash
 ```
 
+#### 对外开放 API（可选）
+
+除网页界面外，还提供 JSON 接口，方便脚本、插件或其它程序调用。
+
+| 接口 | 方法 | 说明 |
+| :--- | :--- | :--- |
+| `/api/translate` | POST | 一次性返回 JSON 结果（**需要 API Key**） |
+| `/api/translate/stream` | POST | 网页使用的 SSE 流式接口（受 Turnstile 会话保护） |
+
+**第一步：在后台设置 API Key**（可配置多个，英文逗号分隔）：
+
+```bash
+# 在项目目录执行，按提示输入密钥
+npx wrangler secret put API_KEYS
+# 例如输入： sk-my-key-1,sk-my-key-2
+```
+
+也可以在控制台 **Settings → Variables → Add** 中添加名为 `API_KEYS` 的变量（建议选 **Secret** 类型）。
+
+> ⚠️ **未配置 `API_KEYS` 时该接口默认关闭**（返回 403），避免额度被陌生人白嫖。
+> 请勿把 Key 写进代码或提交到仓库。
+
+**调用示例**：
+
+```bash
+curl -X POST "https://你的域名/api/translate" \
+  -H "Authorization: Bearer sk-my-key-1" \
+  -H "Content-Type: application/json" \
+  -d '{"text":"hello","from":"en","to":"zh"}'
+```
+
+```json
+{
+  "ok": true,
+  "result": "# 你好\n\n## 核心含义\n- 用于问候……",
+  "mode": "word",
+  "model": "@cf/zai-org/glm-4.7-flash",
+  "from": "en",
+  "to": "zh"
+}
+```
+
+请求参数：
+
+| 字段 | 必填 | 说明 |
+| :--- | :--- | :--- |
+| `text` | 是 | 要翻译的文本（≤ 12000 字符） |
+| `from` | 否 | 源语言，默认 `auto`（自动检测），可选 `zh` / `en` / `ja` / `ko` |
+| `to` | 否 | 目标语言，默认 `zh` |
+
+鉴权也可以用 `X-API-Key: <key>` 请求头代替 `Authorization`。
+
+响应状态码：`401` Key 缺失或错误 · `403` 未配置 `API_KEYS`（接口关闭）· `400` 参数问题 · `502` 上游调用失败。
+
+浏览器/前端直接调用（跨域已开放）：
+
+```js
+const res = await fetch("https://你的域名/api/translate", {
+  method: "POST",
+  headers: { "Content-Type": "application/json", "X-API-Key": "sk-my-key-1" },
+  body: JSON.stringify({ text: "Hello", to: "zh" }),
+});
+const data = await res.json();
+console.log(data.result);
+```
+
+> 该接口没有内置限流（Workers 免费额度本身就是上限）。Key 一旦泄露请立即更换。
+
 #### 超时与稳定性调优（可选）
 
 | 变量名称 | 类型 | 默认值 | 说明 |

@@ -9,6 +9,8 @@
 #   npx wrangler secret put SESSION_SECRET
 #   npx wrangler secret put TURNSTILE_SECRET_KEY
 #   npx wrangler secret put CUSTOM_API_KEY
+#   npx wrangler secret put API_KEYS          # 开放 API 的访问密钥（可选，多个用逗号分隔）
+#                                             # 未设置时 POST /api/translate 保持关闭（返回 403）
 # ============================================================================
 
 name = "cloudflare-ai-translator"
