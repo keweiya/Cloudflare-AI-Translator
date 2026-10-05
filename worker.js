@@ -1993,7 +1993,7 @@ function getHtml(siteKey, turnstileEnabled) {
     .pane-title{display:flex;align-items:center;gap:8px;font-size:13px;font-weight:620;letter-spacing:.3px;color:var(--muted)}
     .pane-title::before{content:"";width:3px;height:14px;border-radius:2px;background:linear-gradient(180deg,var(--brand),var(--brand-2))}
     .pane-meta{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--faint);min-width:0}
-    .pane-body{flex:1;display:flex;flex-direction:column;padding:16px;min-height:0}
+    .pane-body{position:relative;flex:1;display:flex;flex-direction:column;padding:16px;min-height:0}
     .pane-foot{
       display:flex;align-items:center;justify-content:space-between;gap:10px;
       height:40px;padding:0 16px;flex:none;
@@ -2005,14 +2005,19 @@ function getHtml(siteKey, turnstileEnabled) {
     /* 注意：这里不能用 flex:1 —— flex-basis:0% 会让 JS 设置的高度失效，
        输入长文时既不增高也不能滚动（内容被裁掉）。改为由 JS 显式控制高度。 */
     .editor{
-      flex:none;display:block;width:100%;min-height:200px;border:none;outline:none;
+      flex:none;display:block;width:100%;min-height:220px;border:none;outline:none;
       background:transparent;resize:none;overflow-y:auto;overflow-x:hidden;
       font-size:15.5px;line-height:1.95;color:var(--text);
     }
     .editor::placeholder{color:var(--faint)}
-    .examples{display:flex;flex-wrap:wrap;gap:7px;margin-top:12px}
+    /* 示例词浮在输入框底部，不占用布局高度 —— 否则空白时左侧卡片会比右侧高 */
+    .examples{
+      position:absolute;left:16px;right:16px;bottom:14px;margin:0;
+      display:flex;flex-wrap:wrap;gap:7px;pointer-events:none;
+    }
     .examples.hidden{display:none}
     .chip{
+      pointer-events:auto;
       border:1px dashed var(--line-strong);background:transparent;color:var(--muted);
       border-radius:99px;padding:5px 11px;font-size:12px;cursor:pointer;transition:.16s;
     }
@@ -2023,7 +2028,7 @@ function getHtml(siteKey, turnstileEnabled) {
     }
 
     /* ---------- 结果区 ---------- */
-    .result{flex:1;min-height:200px;font-size:15.5px;line-height:1.95;word-break:break-word;overflow-wrap:anywhere}
+    .result{flex:1;min-height:220px;font-size:15.5px;line-height:1.95;word-break:break-word;overflow-wrap:anywhere}
     .result[data-state="empty"]{display:flex;align-items:center;justify-content:center}
     .empty{display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;gap:8px;padding:28px 12px;color:var(--faint)}
     .empty-icon{
@@ -2155,6 +2160,7 @@ function getHtml(siteKey, turnstileEnabled) {
       /* ≥16px 可避免 iOS 聚焦时自动放大页面 */
       .editor,.result{font-size:16px}
       .editor,.result{min-height:170px}
+      .examples{left:13px;right:13px;bottom:11px}
       .pane-meta .btn-sm{height:28px;padding:0 9px}
       .drawer{width:100%;max-width:100%}
       .drawer-search input{height:40px;font-size:16px}
@@ -2548,26 +2554,30 @@ function getHtml(siteKey, turnstileEnabled) {
       lastSubmittedTo = "";
       translateText(false);
     }
-    // 桌面：左右两栏高度取"较长的一边"，严格对齐且不留空白
-    // 手机：两栏上下堆叠，各按自己的内容高度，不做对齐
+    // 桌面：左右两栏高度取"较长的一边"，两边严格等高；
+    // 空白或字数很少时也都保持默认高度（MIN_PANE_BODY），不会塌陷。
+    // 手机：两栏上下堆叠，各按自己的内容高度，不做对齐。
     const STACKED_QUERY = "(max-width: 960px)";
-    const MIN_PANE_BODY = 210;
+    const MIN_PANE_BODY = 220;
     const MIN_PANE_BODY_STACKED = 170;
     function isStackedLayout() {
       return window.matchMedia ? window.matchMedia(STACKED_QUERY).matches : window.innerWidth <= 960;
     }
+    function paneBodyFloor() {
+      return isStackedLayout() ? MIN_PANE_BODY_STACKED : MIN_PANE_BODY;
+    }
     function autoGrowTextarea() {
-      sourceText.style.height = "auto";
-      sourceText.style.height = sourceText.scrollHeight + "px";
+      sourceText.style.height = "";
+      sourceText.style.height = Math.max(sourceText.scrollHeight, paneBodyFloor()) + "px";
     }
     function syncPanelHeights() {
-      sourceText.style.minHeight = "0px";
-      result.style.minHeight = "0px";
-      sourceText.style.height = "auto";
+      // 先清掉上一轮写入的行内尺寸，量到的才是真实内容高度；
+      // 下限由 CSS 的 min-height 常量保证，所以不存在"只增不减"的棘轮问题
+      sourceText.style.height = "";
+      sourceText.style.minHeight = "";
+      result.style.minHeight = "";
       if (isStackedLayout()) {
-        sourceText.style.minHeight = "";
-        result.style.minHeight = "";
-        sourceText.style.height = Math.max(sourceText.scrollHeight, MIN_PANE_BODY_STACKED) + "px";
+        autoGrowTextarea();
         return;
       }
       const leftH = Math.max(sourceText.scrollHeight, MIN_PANE_BODY);
