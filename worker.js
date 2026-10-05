@@ -1527,144 +1527,334 @@ function getHtml(siteKey, turnstileEnabled) {
 <html lang="zh-CN" data-theme="light">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="color-scheme" content="light dark" />
+  <meta name="theme-color" content="#4f46e5" />
   <title>AI 智能翻译</title>
-  <script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
+  ${turnstileEnabled ? '<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>' : ""}
   <style>
+    /* ---------- 设计变量 ---------- */
     :root{
-      --bg:#f6f8fc; --card:#fff; --text:#111827; --muted:#6b7280; --line:#e5e7eb;
-      --primary:#4f46e5; --primary2:#7c3aed; --shadow:0 10px 30px rgba(0,0,0,.08);
+      --bg:#f6f7fb;
+      --card:#ffffff;
+      --card-soft:#fafbfe;
+      --text:#0f172a;
+      --muted:#64748b;
+      --faint:#94a3b8;
+      --line:#e6e9f0;
+      --line-strong:#d3d9e6;
+      --brand:#4f46e5;
+      --brand-2:#7c3aed;
+      --brand-soft:rgba(79,70,229,.10);
+      --ok:#0ea371;
+      --ok-soft:rgba(14,163,113,.12);
+      --warn:#d97706;
+      --warn-soft:rgba(217,119,6,.12);
+      --danger:#e11d48;
+      --danger-soft:rgba(225,29,72,.10);
+      --shadow-sm:0 1px 2px rgba(15,23,42,.06);
+      --shadow:0 10px 30px -12px rgba(15,23,42,.18), 0 2px 8px -4px rgba(15,23,42,.08);
+      --shadow-lg:0 30px 70px -30px rgba(15,23,42,.35);
+      --r-lg:20px;
+      --r-md:14px;
+      --r-sm:10px;
     }
     html[data-theme="dark"]{
-      --bg:#0b1220; --card:#111827; --text:#e5e7eb; --muted:#9ca3af; --line:#374151;
-      --shadow:0 10px 30px rgba(0,0,0,.35);
+      --bg:#080d18;
+      --card:#0f1729;
+      --card-soft:#0c1424;
+      --text:#e8ecf5;
+      --muted:#93a1b8;
+      --faint:#6b7a94;
+      --line:#1e2a42;
+      --line-strong:#2b3a58;
+      --brand:#6366f1;
+      --brand-2:#a855f7;
+      --brand-soft:rgba(99,102,241,.16);
+      --ok:#34d399;
+      --ok-soft:rgba(52,211,153,.14);
+      --warn:#fbbf24;
+      --warn-soft:rgba(251,191,36,.14);
+      --danger:#fb7185;
+      --danger-soft:rgba(251,113,133,.14);
+      --shadow-sm:0 1px 2px rgba(0,0,0,.4);
+      --shadow:0 12px 34px -14px rgba(0,0,0,.65);
+      --shadow-lg:0 30px 70px -30px rgba(0,0,0,.85);
     }
-    *{box-sizing:border-box;margin:0;padding:0}
-    body{font-family:Inter,"PingFang SC","Microsoft YaHei",Arial;background:var(--bg);color:var(--text)}
-    .hidden{display:none !important}
-    .gate{
+
+    /* ---------- 基础 ---------- */
+    *,*::before,*::after{box-sizing:border-box}
+    *{margin:0;padding:0}
+    body{
       min-height:100vh;
-      display:flex;
-      align-items:center;
-      justify-content:center;
-      padding:16px;
-    }
-    .gate-card{
-      max-width:520px;
-      width:100%;
-      background:var(--card);
-      border:1px solid var(--line);
-      border-radius:24px;
-      box-shadow:var(--shadow);
-      padding:24px;
-      text-align:center;
-      margin:0 auto;
-    }
-    .ts-wrap{
-      width:100%;
-      display:flex;
-      justify-content:center;
-      align-items:center;
-      overflow-x:auto;
-      -webkit-overflow-scrolling:touch;
-    }
-    .ts-wrap .cf-turnstile{
-      margin:0 auto !important;
-    }
-    @media (max-width:480px){
-      .gate-card{
-        padding:18px 14px;
-        border-radius:16px;
-      }
-    }
-    .app{min-height:100vh}
-    .top{position:sticky;top:0;background:var(--bg);border-bottom:1px solid var(--line);z-index:10}
-    .top-in{max-width:1200px;margin:0 auto;padding:14px 16px;display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap}
-    .btn,.sel{border:none;border-radius:12px;padding:10px 14px}
-    .btn{background:#fff;cursor:pointer}
-    .pri{background:linear-gradient(90deg,var(--primary),var(--primary2));color:#fff}
-    .main{max-width:1200px;margin:0 auto;padding:16px}
-    .toolbar{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px}
-    .panel{display:grid;grid-template-columns:1fr 1fr;gap:16px}
-    .card{
-      background:var(--card);
-      border:1px solid var(--line);
-      border-radius:20px;
-      box-shadow:var(--shadow);
-      padding:16px;
-      min-height:360px;
-      display:flex;
-      flex-direction:column;
-      align-items:stretch;
-    }
-    .head{display:flex;justify-content:space-between;color:var(--muted);font-size:12px;margin-bottom:10px}
-    .content-area{
-      width:100%;
-      min-height:140px;
-      border:none;
-      outline:none;
-      background:transparent;
+      font-family:"Inter","PingFang SC","Hiragino Sans GB","Microsoft YaHei",system-ui,-apple-system,sans-serif;
+      background:var(--bg);
       color:var(--text);
-      font-size:16px;
-      line-height:1.9;
-      padding:0;
-      margin:0;
-      white-space:pre-wrap;
-      word-break:break-word;
-      flex:1;
+      line-height:1.65;
+      -webkit-font-smoothing:antialiased;
+      text-rendering:optimizeLegibility;
     }
-    textarea.content-area{
-      resize:none;
-      overflow:hidden;
-      font-family:inherit;
-      display:block;
+    body::before{
+      content:"";position:fixed;left:0;right:0;top:0;height:460px;z-index:-1;pointer-events:none;
+      background:radial-gradient(58% 100% at 50% 0,var(--brand-soft),transparent 72%);
     }
-    .result-box{
-      background:transparent;
-      border:none;
-      border-radius:0;
-      padding:0;
-      min-height:140px;
+    button,input,select,textarea{font:inherit;color:inherit}
+    ::selection{background:var(--brand-soft)}
+    .hidden{display:none !important}
+    .sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+
+    /* 滚动条 */
+    *::-webkit-scrollbar{width:10px;height:10px}
+    *::-webkit-scrollbar-thumb{background:var(--line-strong);border-radius:99px;border:3px solid transparent;background-clip:content-box}
+    *::-webkit-scrollbar-thumb:hover{background:var(--faint);background-clip:content-box}
+    *::-webkit-scrollbar-track{background:transparent}
+
+    /* ---------- 按钮 ---------- */
+    .btn{
+      display:inline-flex;align-items:center;justify-content:center;gap:6px;
+      height:38px;padding:0 14px;border:1px solid var(--line);border-radius:var(--r-sm);
+      background:var(--card);color:var(--text);font-size:13.5px;font-weight:500;
+      cursor:pointer;white-space:nowrap;transition:transform .15s,border-color .15s,background .15s,box-shadow .15s;
     }
-    .result-typing{transition:opacity .18s ease;opacity:.98}
-    .empty{
-      min-height:140px;display:flex;align-items:center;justify-content:center;flex-direction:column;
-      color:var(--muted);text-align:center;padding:18px
+    .btn:hover{border-color:var(--line-strong);background:var(--card-soft);transform:translateY(-1px)}
+    .btn:active{transform:translateY(0)}
+    .btn:focus-visible{outline:2px solid var(--brand);outline-offset:2px}
+    .btn[disabled]{opacity:.55;cursor:not-allowed;transform:none}
+    .btn-sm{height:30px;padding:0 10px;font-size:12.5px;border-radius:9px}
+    .btn-icon{width:38px;padding:0;font-size:15px}
+    .btn-icon.btn-sm{width:30px;font-size:13px}
+    .btn-primary{
+      border-color:transparent;color:#fff;
+      background:linear-gradient(135deg,var(--brand),var(--brand-2));
+      box-shadow:0 8px 20px -10px var(--brand);
     }
-    .empty i{font-style:normal;font-size:24px;margin-bottom:8px}
-    .md h1,.md h2,.md h3{line-height:1.4;margin:12px 0 8px}
-    .md h1{font-size:22px}
-    .md h2{font-size:19px}
-    .md h3{font-size:17px}
-    .md hr{border:none;border-top:1px solid var(--line);margin:10px 0}
-    .md p{margin:0 0 10px;line-height:1.9}
-    .md ol,.md ul{margin:0 0 10px 22px}
-    .md li{margin:4px 0;line-height:1.8}
-    .md strong{font-weight:700}
+    .btn-primary:hover{filter:brightness(1.06);background:linear-gradient(135deg,var(--brand),var(--brand-2))}
+
+    /* ---------- 验证闸门 ---------- */
+    .gate{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px}
+    .gate-card{
+      width:100%;max-width:440px;padding:30px 28px 26px;text-align:center;
+      background:var(--card);border:1px solid var(--line);border-radius:var(--r-lg);box-shadow:var(--shadow-lg);
+      animation:rise .45s cubic-bezier(.22,1,.36,1) both;
+    }
+    @keyframes rise{from{opacity:0;transform:translateY(14px) scale(.98)}to{opacity:1;transform:none}}
+    .gate-card .brand{justify-content:center;margin-bottom:6px}
+    .gate-hint{color:var(--muted);font-size:13.5px;margin:14px 0 18px}
+    .gate-tip{color:var(--faint);font-size:12.5px;margin-top:16px;min-height:18px}
+    .ts-wrap{display:flex;justify-content:center;align-items:center;overflow-x:auto;-webkit-overflow-scrolling:touch}
+    .ts-wrap .cf-turnstile{margin:0 auto !important}
+
+    /* ---------- 品牌 ---------- */
+    .brand{display:flex;align-items:center;gap:11px;min-width:0}
+    .brand-mark{
+      flex:none;width:38px;height:38px;border-radius:12px;display:grid;place-items:center;
+      color:#fff;font-size:17px;font-weight:700;letter-spacing:.5px;
+      background:linear-gradient(135deg,var(--brand),var(--brand-2));
+      box-shadow:0 8px 20px -10px var(--brand);
+    }
+    .brand-text{display:flex;flex-direction:column;min-width:0;line-height:1.25;text-align:left}
+    .brand-text b{font-size:15.5px;font-weight:650;letter-spacing:.2px}
+    .brand-text span{font-size:11.5px;color:var(--faint)}
+    .brand-lg .brand-mark{width:46px;height:46px;border-radius:14px;font-size:20px}
+    .brand-lg .brand-text b{font-size:19px}
+    .brand-lg .brand-text span{font-size:12.5px}
+
+    /* ---------- 顶栏 ---------- */
+    .topbar{position:sticky;top:0;z-index:20;border-bottom:1px solid var(--line);background:var(--bg);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);background:color-mix(in srgb,var(--bg) 82%,transparent)}
+    .topbar-inner{max-width:1240px;margin:0 auto;padding:12px 20px;display:flex;align-items:center;justify-content:space-between;gap:12px}
+    .topbar-actions{display:flex;align-items:center;gap:8px}
+
+    /* ---------- 主体 ---------- */
+    .wrap{max-width:1240px;margin:0 auto;padding:22px 20px 60px}
+    .lang-bar{
+      display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+      padding:12px;margin-bottom:18px;
+      background:var(--card);border:1px solid var(--line);border-radius:var(--r-md);box-shadow:var(--shadow-sm);
+    }
+    .sel{
+      appearance:none;-webkit-appearance:none;
+      height:38px;padding:0 32px 0 14px;border:1px solid var(--line);border-radius:var(--r-sm);
+      background:var(--card-soft) url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%2364748b' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>") no-repeat right 11px center;
+      font-size:13.5px;font-weight:500;cursor:pointer;transition:border-color .15s,background .15s;
+    }
+    .sel:hover{border-color:var(--line-strong)}
+    .sel:focus{outline:none;border-color:var(--brand);box-shadow:0 0 0 3px var(--brand-soft)}
+    .lang-bar-right{margin-left:auto;display:flex;gap:8px}
+    .lang-arrow{color:var(--faint);font-size:15px;user-select:none}
+
+    .workspace{display:grid;grid-template-columns:1fr 1fr;gap:18px;align-items:start}
+    .pane{
+      display:flex;flex-direction:column;min-height:400px;
+      background:var(--card);border:1px solid var(--line);border-radius:var(--r-lg);box-shadow:var(--shadow);
+      overflow:hidden;transition:border-color .2s,box-shadow .2s;
+    }
+    .pane:focus-within{border-color:var(--line-strong);box-shadow:var(--shadow-lg)}
+    .pane-head{
+      display:flex;align-items:center;justify-content:space-between;gap:10px;
+      padding:12px 16px;border-bottom:1px solid var(--line);background:var(--card-soft);
+    }
+    .pane-title{display:flex;align-items:center;gap:8px;font-size:13px;font-weight:620;letter-spacing:.3px;color:var(--muted)}
+    .pane-title::before{content:"";width:3px;height:14px;border-radius:2px;background:linear-gradient(180deg,var(--brand),var(--brand-2))}
+    .pane-meta{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--faint)}
+    .pane-body{flex:1;display:flex;flex-direction:column;padding:16px;min-height:0}
+    .pane-foot{
+      display:flex;align-items:center;justify-content:space-between;gap:10px;
+      padding:10px 16px;border-top:1px solid var(--line);background:var(--card-soft);
+      font-size:11.5px;color:var(--faint);
+    }
+
+    /* ---------- 输入区 ---------- */
+    .editor{
+      flex:1;width:100%;min-height:200px;border:none;outline:none;background:transparent;resize:none;
+      font-size:15.5px;line-height:1.95;color:var(--text);overflow:hidden;display:block;
+    }
+    .editor::placeholder{color:var(--faint)}
+    .examples{display:flex;flex-wrap:wrap;gap:7px;margin-top:12px}
+    .examples.hidden{display:none}
+    .chip{
+      border:1px dashed var(--line-strong);background:transparent;color:var(--muted);
+      border-radius:99px;padding:5px 11px;font-size:12px;cursor:pointer;transition:.16s;
+    }
+    .chip:hover{color:var(--brand);border-color:var(--brand);background:var(--brand-soft);border-style:solid}
+    .kbd{
+      display:inline-block;padding:1px 6px;border:1px solid var(--line);border-bottom-width:2px;
+      border-radius:6px;background:var(--card);font-size:11px;color:var(--muted);font-family:inherit;
+    }
+
+    /* ---------- 结果区 ---------- */
+    .result{flex:1;min-height:200px;font-size:15.5px;line-height:1.95;word-break:break-word;overflow-wrap:anywhere}
+    .result[data-state="empty"]{display:flex;align-items:center;justify-content:center}
+    .empty{display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;gap:8px;padding:28px 12px;color:var(--faint)}
+    .empty-icon{
+      width:44px;height:44px;border-radius:14px;display:grid;place-items:center;font-size:20px;
+      background:var(--brand-soft);color:var(--brand);margin-bottom:2px;
+    }
+    .empty-title{font-size:14px;font-weight:600;color:var(--text)}
+    .empty-sub{font-size:12.5px;max-width:280px;line-height:1.7}
+    .empty.error .empty-icon{background:var(--danger-soft);color:var(--danger)}
+
+    .md h1,.md h2,.md h3,.md h4{line-height:1.4;margin:18px 0 10px;font-weight:650}
+    .md > :first-child{margin-top:0}
+    .md h1{font-size:23px}
+    .md h2{font-size:18.5px;padding-bottom:6px;border-bottom:1px solid var(--line)}
+    .md h3{font-size:16.5px}
+    .md p{margin:0 0 12px}
+    .md ul,.md ol{margin:0 0 12px 22px}
+    .md li{margin:5px 0}
+    .md li::marker{color:var(--brand)}
+    .md strong{font-weight:680}
     .md em{font-style:italic}
-    .md code{padding:1px 4px;border-radius:6px;background:rgba(0,0,0,.06)}
-    html[data-theme="dark"] .md code{background:rgba(255,255,255,.12)}
-    .foot{margin-top:10px;color:var(--muted);font-size:12px;display:flex;justify-content:space-between}
-    .drawer-mask{position:fixed;inset:0;background:rgba(0,0,0,.35);opacity:0;pointer-events:none;transition:.2s}
+    .md a{color:var(--brand);text-decoration:none;border-bottom:1px solid var(--brand-soft)}
+    .md a:hover{border-bottom-color:var(--brand)}
+    .md code{
+      padding:2px 6px;border-radius:6px;background:var(--brand-soft);color:var(--brand);
+      font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.9em;
+    }
+    .md pre{
+      margin:0 0 12px;padding:14px 16px;border-radius:var(--r-md);overflow-x:auto;
+      background:var(--card-soft);border:1px solid var(--line);
+    }
+    .md pre code{padding:0;background:none;color:var(--text);font-size:.88em;line-height:1.7}
+    .md blockquote{
+      margin:0 0 12px;padding:6px 14px;border-left:3px solid var(--brand);
+      background:var(--brand-soft);border-radius:0 var(--r-sm) var(--r-sm) 0;color:var(--muted);
+    }
+    .md hr{border:none;border-top:1px solid var(--line);margin:18px 0}
+    .caret{display:inline-block;width:2px;height:1.05em;vertical-align:-2px;margin-left:2px;background:var(--brand);animation:blink 1s steps(2,start) infinite}
+    @keyframes blink{0%,100%{opacity:1}50%{opacity:0}}
+
+    .skeleton{display:flex;flex-direction:column;gap:12px;padding-top:6px}
+    .skeleton span{display:block;height:13px;border-radius:99px;background:linear-gradient(90deg,var(--line) 25%,var(--card-soft) 50%,var(--line) 75%);background-size:200% 100%;animation:shimmer 1.4s infinite linear}
+    .skeleton span:nth-child(1){width:92%}
+    .skeleton span:nth-child(2){width:78%}
+    .skeleton span:nth-child(3){width:56%}
+    @keyframes shimmer{from{background-position:200% 0}to{background-position:-200% 0}}
+
+    /* ---------- 状态胶囊 ---------- */
+    .pill{
+      display:inline-flex;align-items:center;gap:6px;height:24px;padding:0 10px;border-radius:99px;
+      font-size:11.5px;font-weight:520;white-space:nowrap;
+      background:var(--card);border:1px solid var(--line);color:var(--muted);
+    }
+    .pill::before{content:"";width:6px;height:6px;border-radius:99px;background:currentColor;opacity:.75}
+    .pill-idle{border-color:var(--line);color:var(--faint)}
+    .pill-busy{background:var(--warn-soft);border-color:transparent;color:var(--warn)}
+    .pill-busy::before{animation:pulse 1.1s infinite ease-in-out}
+    .pill-ok{background:var(--ok-soft);border-color:transparent;color:var(--ok)}
+    .pill-err{background:var(--danger-soft);border-color:transparent;color:var(--danger)}
+    @keyframes pulse{0%,100%{opacity:.35;transform:scale(.8)}50%{opacity:1;transform:scale(1.15)}}
+
+    /* ---------- 历史抽屉 ---------- */
+    .drawer-mask{position:fixed;inset:0;background:rgba(8,13,24,.5);backdrop-filter:blur(2px);opacity:0;pointer-events:none;transition:opacity .22s;z-index:30}
     .drawer-mask.show{opacity:1;pointer-events:auto}
     .drawer{
-      position:fixed;right:0;top:0;height:100vh;width:400px;max-width:92vw;background:var(--card);
-      border-left:1px solid var(--line);transform:translateX(100%);transition:.2s;z-index:30;display:flex;flex-direction:column
+      position:fixed;top:0;right:0;height:100vh;height:100dvh;width:400px;max-width:92vw;z-index:40;
+      display:flex;flex-direction:column;background:var(--card);border-left:1px solid var(--line);
+      transform:translateX(102%);transition:transform .26s cubic-bezier(.22,1,.36,1);
     }
-    .drawer.show{transform:translateX(0)}
-    .drawer-h{padding:14px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between}
-    .history{padding:12px;overflow:auto;display:flex;flex-direction:column;gap:10px}
-    .item{border:1px solid var(--line);border-radius:12px;padding:10px;background:var(--card);cursor:pointer}
-    .item p{font-size:13px;line-height:1.6;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
-    .meta{display:flex;justify-content:space-between;font-size:12px;color:var(--muted);margin-top:6px}
-    @media (max-width:960px){.panel{grid-template-columns:1fr}.card{min-height:320px}}
+    .drawer.show{transform:none;box-shadow:var(--shadow-lg)}
+    .drawer-head{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:14px 16px;border-bottom:1px solid var(--line)}
+    .drawer-head b{font-size:14px;font-weight:620}
+    .drawer-head-actions{display:flex;gap:6px}
+    .drawer-search{padding:12px 16px 4px}
+    .drawer-search input{
+      width:100%;height:36px;padding:0 12px;border:1px solid var(--line);border-radius:var(--r-sm);
+      background:var(--card-soft);font-size:13px;outline:none;transition:.15s;
+    }
+    .drawer-search input:focus{border-color:var(--brand);box-shadow:0 0 0 3px var(--brand-soft)}
+    .history{flex:1;overflow:auto;padding:12px 16px 20px;display:flex;flex-direction:column;gap:10px}
+    .item{
+      border:1px solid var(--line);border-radius:var(--r-md);padding:12px;background:var(--card-soft);
+      cursor:pointer;transition:.16s;
+    }
+    .item:hover{border-color:var(--brand);background:var(--brand-soft);transform:translateY(-1px)}
+    .item p{font-size:13px;line-height:1.6;color:var(--text);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+    .item .meta{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:8px;font-size:11.5px;color:var(--faint)}
+    .item-actions{display:flex;justify-content:flex-end;margin-top:8px}
+    .history-empty{color:var(--faint);font-size:13px;text-align:center;padding:30px 10px}
+
+    /* ---------- 提示条 ---------- */
+    .toast{
+      position:fixed;left:50%;bottom:28px;transform:translate(-50%,14px);
+      padding:10px 18px;border-radius:99px;font-size:13px;font-weight:500;
+      background:var(--text);color:var(--bg);box-shadow:var(--shadow-lg);
+      opacity:0;pointer-events:none;transition:opacity .2s,transform .2s;z-index:60;
+    }
+    .toast.show{opacity:1;transform:translate(-50%,0)}
+
+    /* ---------- 响应式 ---------- */
+    @media (max-width:960px){
+      .workspace{grid-template-columns:1fr}
+      .pane{min-height:340px}
+      .lang-bar-right{width:100%;margin-left:0}
+      .lang-bar-right .btn{flex:1}
+    }
+    @media (max-width:560px){
+      .wrap{padding:16px 14px 48px}
+      .topbar-inner{padding:10px 14px}
+      .brand-text span{display:none}
+      .pane-head,.pane-body,.pane-foot{padding-left:13px;padding-right:13px}
+      .editor,.result{font-size:15px}
+      .drawer{width:100%;max-width:100%}
+      .gate-card{padding:24px 18px}
+    }
+    @media (prefers-reduced-motion:reduce){
+      *,*::before,*::after{animation-duration:.001ms !important;animation-iteration-count:1 !important;transition-duration:.001ms !important}
+    }
   </style>
 </head>
 <body>
+  <!-- ================= 验证闸门 ================= -->
   <div id="gate" class="gate hidden">
     <div class="gate-card">
-      <h2 style="margin-bottom:8px">AI 智能翻译</h2>
-      <p style="color:#6b7280;margin-bottom:16px">请先完成安全验证</p>
+      <div class="brand brand-lg">
+        <span class="brand-mark">译</span>
+        <div class="brand-text">
+          <b>AI 智能翻译</b>
+          <span>Cloudflare Workers AI 驱动</span>
+        </div>
+      </div>
+      <p class="gate-hint">请完成安全验证后开始使用</p>
       <div class="ts-wrap">
         <div class="cf-turnstile"
             data-sitekey="${escapeHtmlAttr(siteKey)}"
@@ -1672,23 +1862,32 @@ function getHtml(siteKey, turnstileEnabled) {
             data-expired-callback="onTurnstileExpired"
             data-error-callback="onTurnstileError"></div>
       </div>
-      <p id="gateTip" style="margin-top:12px;color:#6b7280;font-size:13px">等待验证...</p>
+      <p id="gateTip" class="gate-tip">等待验证...</p>
     </div>
   </div>
+
+  <!-- ================= 主界面 ================= -->
   <div id="app" class="app hidden">
-    <div class="top">
-      <div class="top-in">
-        <div style="font-weight:700">AI 智能翻译</div>
-        <div style="display:flex;gap:8px;flex-wrap:wrap">
-          <button id="themeBtn" class="btn">🌓 主题</button>
-          <button id="historyBtn" class="btn">历史记录</button>
-          <button id="clearBtn" class="btn">清空</button>
-          <button id="goBtn" class="btn pri">立即翻译</button>
+    <header class="topbar">
+      <div class="topbar-inner">
+        <div class="brand">
+          <span class="brand-mark">译</span>
+          <div class="brand-text">
+            <b>AI 智能翻译</b>
+            <span>单词解析 · 长文翻译</span>
+          </div>
+        </div>
+        <div class="topbar-actions">
+          <button id="themeBtn" class="btn btn-icon" type="button" title="切换主题" aria-label="切换主题">◐</button>
+          <button id="historyBtn" class="btn" type="button">历史记录</button>
+          <button id="clearBtn" class="btn" type="button">清空</button>
         </div>
       </div>
-    </div>
-    <div class="main">
-      <div class="toolbar">
+    </header>
+
+    <main class="wrap">
+      <section class="lang-bar">
+        <label class="sr" for="fromLang">源语言</label>
         <select id="fromLang" class="sel">
           <option value="auto">自动检测</option>
           <option value="zh">中文</option>
@@ -1696,45 +1895,89 @@ function getHtml(siteKey, turnstileEnabled) {
           <option value="ja">日文</option>
           <option value="ko">韩文</option>
         </select>
-        <button id="swapBtn" class="btn">⇄ 切换语言</button>
+        <button id="swapBtn" class="btn btn-icon" type="button" title="切换语言" aria-label="切换语言">⇄</button>
+        <label class="sr" for="toLang">目标语言</label>
         <select id="toLang" class="sel">
           <option value="zh" selected>中文</option>
           <option value="en">英文</option>
           <option value="ja">日文</option>
           <option value="ko">韩文</option>
         </select>
-        <button id="copyBtn" class="btn">复制结果</button>
-      </div>
-      <div class="panel">
-        <div class="card">
-          <div class="head"><span>原文输入</span><span>Ctrl/Cmd + Enter</span></div>
-          <textarea id="sourceText" class="content-area" placeholder="请输入要翻译的内容或单词..."></textarea>
-          <div class="foot"><span>自动翻译已开启</span><span id="sourceCount">0 字</span></div>
+        <div class="lang-bar-right">
+          <button id="goBtn" class="btn btn-primary" type="button">立即翻译</button>
         </div>
-        <div class="card" id="resultCard">
-          <div class="head"><span>翻译结果</span><span id="statusInfo">会话检查中...</span></div>
-          <div id="result" class="result-wrap content-area"></div>
-          <div class="foot"><span>整页滚动查看长文</span><span id="resultCount">0 字</span></div>
-        </div>
-      </div>
-    </div>
+      </section>
+
+      <section class="workspace">
+        <article class="pane">
+          <header class="pane-head">
+            <div class="pane-title">原文输入</div>
+            <div class="pane-meta"><span id="sourceCount">0 字</span></div>
+          </header>
+          <div class="pane-body">
+            <textarea id="sourceText" class="editor" spellcheck="false" placeholder="输入单词、句子或整篇文章…"></textarea>
+            <div id="examples" class="examples">
+              <button class="chip" type="button" data-text="hello">hello</button>
+              <button class="chip" type="button" data-text="How are you today?">How are you today?</button>
+              <button class="chip" type="button" data-text="Cloudflare Workers 是一个边缘计算平台。">试试中译英</button>
+            </div>
+          </div>
+          <footer class="pane-foot">
+            <span><span class="kbd">Ctrl</span> + <span class="kbd">Enter</span> 立即翻译</span>
+            <span>自动翻译已开启</span>
+          </footer>
+        </article>
+
+        <article class="pane">
+          <header class="pane-head">
+            <div class="pane-title">翻译结果</div>
+            <div class="pane-meta">
+              <span id="statusInfo" class="pill pill-idle">会话检查中…</span>
+              <button id="copyBtn" class="btn btn-sm" type="button">复制</button>
+            </div>
+          </header>
+          <div class="pane-body">
+            <div id="result" class="result" data-state="empty"></div>
+          </div>
+          <footer class="pane-foot">
+            <span id="resultCount">0 字</span>
+            <span id="modeInfo"></span>
+          </footer>
+        </article>
+      </section>
+    </main>
   </div>
+
+  <!-- ================= 历史抽屉 ================= -->
   <div id="mask" class="drawer-mask"></div>
-  <div id="drawer" class="drawer">
-    <div class="drawer-h">
+  <aside id="drawer" class="drawer" aria-hidden="true">
+    <header class="drawer-head">
       <b>历史记录</b>
-      <div style="display:flex;gap:8px">
-        <button id="clearHistoryBtn" class="btn">清空</button>
-        <button id="closeHistoryBtn" class="btn">关闭</button>
+      <div class="drawer-head-actions">
+        <button id="clearHistoryBtn" class="btn btn-sm" type="button">清空</button>
+        <button id="closeHistoryBtn" class="btn btn-sm btn-icon" type="button" aria-label="关闭">✕</button>
       </div>
+    </header>
+    <div class="drawer-search">
+      <input id="historySearch" type="search" placeholder="搜索历史记录…" autocomplete="off" />
     </div>
     <div id="historyList" class="history"></div>
-  </div>
+  </aside>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
   <script>
+    "use strict";
     const HISTORY_KEY = "translator_history_v10";
     const THEME_KEY = "translator_theme_v1";
     const MAX_RETRY = 3;
+    const WATCHDOG_MS = 60000;
     const TURNSTILE_ENABLED = ${JSON.stringify(!!turnstileEnabled)};
+    // 用字符码构造反引号相关正则，避免与外层模板字符串冲突
+    const TICK = String.fromCharCode(96);
+    const RE_INLINE_CODE = new RegExp(TICK + "([^" + TICK + "]+)" + TICK, "g");
+    const RE_FENCE = new RegExp("^" + TICK + TICK + TICK);
+
     let verified = false;
     let debounceTimer = null;
     let currentController = null;
@@ -1742,55 +1985,91 @@ function getHtml(siteKey, turnstileEnabled) {
     let lastSubmittedFrom = "";
     let lastSubmittedTo = "";
     let currentMode = "translate";
-    const gate = document.getElementById("gate");
-    const app = document.getElementById("app");
-    const gateTip = document.getElementById("gateTip");
-    const sourceText = document.getElementById("sourceText");
-    const result = document.getElementById("result");
-    const sourceCount = document.getElementById("sourceCount");
-    const resultCount = document.getElementById("resultCount");
-    const statusInfo = document.getElementById("statusInfo");
-    const fromLang = document.getElementById("fromLang");
-    const toLang = document.getElementById("toLang");
-    const historyList = document.getElementById("historyList");
-    const drawer = document.getElementById("drawer");
-    const mask = document.getElementById("mask");
+    let toastTimer = null;
+    let historyQuery = "";
+
+    const byId = function (id) { return document.getElementById(id); };
+    const gate = byId("gate");
+    const app = byId("app");
+    const gateTip = byId("gateTip");
+    const sourceText = byId("sourceText");
+    const result = byId("result");
+    const sourceCount = byId("sourceCount");
+    const resultCount = byId("resultCount");
+    const statusInfo = byId("statusInfo");
+    const modeInfo = byId("modeInfo");
+    const fromLang = byId("fromLang");
+    const toLang = byId("toLang");
+    const historyList = byId("historyList");
+    const historySearch = byId("historySearch");
+    const drawer = byId("drawer");
+    const mask = byId("mask");
+    const toastEl = byId("toast");
+    const examples = byId("examples");
+
     initTheme();
     bindEvents();
     renderHistory();
     renderEmptyResult();
     checkSession();
-    requestAnimationFrame(() => {
-      autoGrowTextarea();
-      syncPanelHeights();
-    });
+    requestAnimationFrame(function () { autoGrowTextarea(); syncPanelHeights(); });
+
+    /* ---------------- 界面状态 ---------------- */
+    function setStatus(text, kind) {
+      statusInfo.innerText = text;
+      statusInfo.className = "pill pill-" + (kind || "idle");
+    }
+    function showToast(message) {
+      toastEl.innerText = message;
+      toastEl.classList.add("show");
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(function () { toastEl.classList.remove("show"); }, 2000);
+    }
+    function setMode(mode) {
+      currentMode = mode === "word" ? "word" : "translate";
+      modeInfo.innerText = currentMode === "word" ? "词汇解析模式" : "整句翻译模式";
+    }
+
     function bindEvents() {
-      document.getElementById("themeBtn").addEventListener("click", toggleTheme);
-      document.getElementById("historyBtn").addEventListener("click", openHistory);
-      document.getElementById("clearBtn").addEventListener("click", clearAll);
-      document.getElementById("goBtn").addEventListener("click", () => translateText(true));
-      document.getElementById("swapBtn").addEventListener("click", swapLanguage);
-      document.getElementById("copyBtn").addEventListener("click", copyResult);
-      document.getElementById("clearHistoryBtn").addEventListener("click", clearHistory);
-      document.getElementById("closeHistoryBtn").addEventListener("click", closeHistory);
+      byId("themeBtn").addEventListener("click", toggleTheme);
+      byId("historyBtn").addEventListener("click", openHistory);
+      byId("clearBtn").addEventListener("click", clearAll);
+      byId("goBtn").addEventListener("click", function () { translateText(true); });
+      byId("swapBtn").addEventListener("click", swapLanguage);
+      byId("copyBtn").addEventListener("click", copyResult);
+      byId("clearHistoryBtn").addEventListener("click", clearHistory);
+      byId("closeHistoryBtn").addEventListener("click", closeHistory);
       mask.addEventListener("click", closeHistory);
       sourceText.addEventListener("input", onInput);
-      sourceText.addEventListener("blur", () => autoTranslate());
-      sourceText.addEventListener("keydown", (e) => {
+      sourceText.addEventListener("blur", function () { autoTranslate(); });
+      sourceText.addEventListener("keydown", function (e) {
         if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
           e.preventDefault();
           translateText(true);
         }
       });
-      fromLang.addEventListener("change", () => {
+      fromLang.addEventListener("change", function () {
         if (!sourceText.value.trim()) return;
         immediateRetranslate();
       });
-      toLang.addEventListener("change", () => {
+      toLang.addEventListener("change", function () {
         if (!sourceText.value.trim()) return;
         immediateRetranslate();
       });
-      historyList.addEventListener("click", (e) => {
+      examples.addEventListener("click", function (e) {
+        const chip = e.target.closest(".chip");
+        if (!chip) return;
+        sourceText.value = chip.getAttribute("data-text") || "";
+        syncExampleChips();
+        autoGrowTextarea();
+        sourceCount.innerText = sourceText.value.length + " 字";
+        immediateRetranslate();
+      });
+      historySearch.addEventListener("input", function () {
+        historyQuery = historySearch.value || "";
+        renderHistory();
+      });
+      historyList.addEventListener("click", function (e) {
         const del = e.target.closest("[data-action='delete']");
         if (del) {
           e.stopPropagation();
@@ -1800,13 +2079,20 @@ function getHtml(siteKey, turnstileEnabled) {
         const item = e.target.closest(".item");
         if (item) loadHistory(item.getAttribute("data-id"));
       });
-      window.addEventListener("resize", () => {
+      document.addEventListener("keydown", function (e) {
+        if (e.key === "Escape") closeHistory();
+      });
+      window.addEventListener("resize", function () {
         autoGrowTextarea();
         syncPanelHeights();
       });
     }
+
+    function syncExampleChips() {
+      examples.classList.toggle("hidden", !!sourceText.value.trim());
+    }
     function sleep(ms) {
-      return new Promise(resolve => setTimeout(resolve, ms));
+      return new Promise(function (resolve) { setTimeout(resolve, ms); });
     }
     function immediateRetranslate() {
       clearTimeout(debounceTimer);
@@ -1817,23 +2103,23 @@ function getHtml(siteKey, turnstileEnabled) {
     }
     function autoGrowTextarea() {
       sourceText.style.height = "auto";
-      sourceText.style.height = sourceText.scrollHeight + "px";
+      sourceText.style.height = Math.max(sourceText.scrollHeight, 200) + "px";
     }
     function syncPanelHeights() {
-      sourceText.style.minHeight = "140px";
-      result.style.minHeight = "140px";
-      const leftH = Math.max(sourceText.scrollHeight, 140);
-      const rightH = Math.max(result.scrollHeight, 140);
-      const target = Math.max(leftH, rightH);
+      const leftH = Math.max(sourceText.scrollHeight, 200);
+      const rightH = Math.max(result.scrollHeight, 200);
+      const target = Math.max(leftH, rightH, 200);
       sourceText.style.height = target + "px";
       result.style.minHeight = target + "px";
     }
+
+    /* ---------------- 会话与验证 ---------------- */
     async function checkSession() {
       if (!TURNSTILE_ENABLED) {
         verified = true;
         gate.classList.add("hidden");
         app.classList.remove("hidden");
-        statusInfo.innerText = "认证已关闭，可以开始翻译";
+        setStatus("可以开始翻译", "ok");
         requestAnimationFrame(syncPanelHeights);
         return;
       }
@@ -1844,47 +2130,50 @@ function getHtml(siteKey, turnstileEnabled) {
           verified = true;
           gate.classList.add("hidden");
           app.classList.remove("hidden");
-          statusInfo.innerText = "会话有效，可以开始翻译";
+          setStatus("会话有效", "ok");
           requestAnimationFrame(syncPanelHeights);
         } else {
           gate.classList.remove("hidden");
           app.classList.add("hidden");
         }
-      } catch {
+      } catch (e) {
         gate.classList.remove("hidden");
         app.classList.add("hidden");
       }
     }
     async function onTurnstileSuccess(token) {
-      gateTip.innerText = "验证成功，正在进入...";
+      gateTip.innerText = "验证成功，正在进入…";
       try {
         const r = await fetch("/api/verify", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ turnstileToken: token }),
+          body: JSON.stringify({ turnstileToken: token })
         });
         const d = await r.json();
         if (!r.ok || !d.ok) throw new Error(d.error || "验证失败");
         verified = true;
         gate.classList.add("hidden");
         app.classList.remove("hidden");
-        statusInfo.innerText = "会话有效，可以开始翻译";
+        setStatus("会话有效", "ok");
         requestAnimationFrame(syncPanelHeights);
-      } catch {
+      } catch (e) {
         gateTip.innerText = "验证失败，请重试";
       }
     }
     function onTurnstileExpired() {
       verified = false;
-      gateTip.innerText = "验证过期，请重新验证";
+      gateTip.innerText = "验证已过期，请重新验证";
     }
     function onTurnstileError() {
       verified = false;
-      gateTip.innerText = "验证异常，请刷新重试";
+      gateTip.innerText = "验证异常，请刷新页面重试";
     }
+
+    /* ---------------- 输入 ---------------- */
     function onInput() {
       const text = sourceText.value;
       sourceCount.innerText = text.length + " 字";
+      syncExampleChips();
       autoGrowTextarea();
       if (!text.trim()) {
         clearTimeout(debounceTimer);
@@ -1894,82 +2183,67 @@ function getHtml(siteKey, turnstileEnabled) {
         if (currentController) currentController.abort();
         renderEmptyResult();
         resultCount.innerText = "0 字";
-        statusInfo.innerText = "会话有效，可以开始翻译";
+        setStatus("可以开始翻译", "ok");
         syncPanelHeights();
         return;
       }
       clearTimeout(debounceTimer);
-      debounceTimer = setTimeout(() => autoTranslate(), 900);
+      debounceTimer = setTimeout(function () { autoTranslate(); }, 900);
       syncPanelHeights();
     }
     function autoTranslate() {
       const text = sourceText.value.trim();
       if (!verified || !text) return;
-      if (
-        text === lastSubmittedText &&
-        fromLang.value === lastSubmittedFrom &&
-        toLang.value === lastSubmittedTo
-      ) {
-        return;
-      }
+      if (text === lastSubmittedText && fromLang.value === lastSubmittedFrom && toLang.value === lastSubmittedTo) return;
       translateText(false);
     }
     function swapLanguage() {
       if (fromLang.value === "auto") {
-        statusInfo.innerText = "自动检测模式下不能直接切换源语言";
+        showToast("自动检测模式下无法直接切换源语言");
         return;
       }
       const tmp = fromLang.value;
       fromLang.value = toLang.value;
       toLang.value = tmp;
-      if (sourceText.value.trim()) {
-        immediateRetranslate();
-      }
+      if (sourceText.value.trim()) immediateRetranslate();
     }
+
+    /* ---------------- 请求 ---------------- */
     async function doTranslateRequest(text, signal) {
-      const WATCHDOG_MS = 60000;
       let timedOut = false;
       const localAbort = new AbortController();
-      const relayAbort = () => { try { localAbort.abort(); } catch {} };
+      const relayAbort = function () { try { localAbort.abort(); } catch (e) {} };
       if (signal) {
         if (signal.aborted) relayAbort();
         else signal.addEventListener("abort", relayAbort, { once: true });
       }
       let watchdog = null;
-      const armWatchdog = () => {
+      const armWatchdog = function () {
         clearTimeout(watchdog);
-        watchdog = setTimeout(() => { timedOut = true; relayAbort(); }, WATCHDOG_MS);
+        watchdog = setTimeout(function () { timedOut = true; relayAbort(); }, WATCHDOG_MS);
       };
       armWatchdog();
       try {
         const res = await fetch("/api/translate/stream", {
           method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Accept: "text/event-stream",
-          },
-          body: JSON.stringify({
-            text,
-            from: fromLang.value,
-            to: toLang.value,
-          }),
-          signal: localAbort.signal,
+          headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
+          body: JSON.stringify({ text: text, from: fromLang.value, to: toLang.value }),
+          signal: localAbort.signal
         });
         if (!res.ok || !res.body) {
           let msg = "服务暂时不可用，请再次尝试";
           try {
             const ct = (res.headers.get("content-type") || "").toLowerCase();
-            if (ct.includes("application/json")) {
+            if (ct.indexOf("application/json") !== -1) {
               const data = await res.json();
-              if (data?.error) msg = String(data.error);
+              if (data && data.error) msg = String(data.error);
             } else {
               const txt = (await res.text()).trim();
               if (txt) msg = txt.slice(0, 300);
             }
-          } catch {}
-          const fatal = res.status === 400 || res.status === 401 || res.status === 403;
+          } catch (e) {}
           const err = new Error(msg);
-          if (fatal) err.retryable = false;
+          if (res.status === 400 || res.status === 401 || res.status === 403) err.retryable = false;
           throw err;
         }
         const reader = res.body.getReader();
@@ -1979,47 +2253,42 @@ function getHtml(siteKey, turnstileEnabled) {
         let receivedAnyData = false;
         let chunkCount = 0;
         while (true) {
-          const { value, done } = await reader.read();
-          if (done) break;
+          const step = await reader.read();
+          if (step.done) break;
           armWatchdog();
-          const decoded = decoder.decode(value, { stream: true });
-          buffer += decoded;
+          buffer += decoder.decode(step.value, { stream: true });
           chunkCount++;
           const blocks = buffer.split("\\n\\n");
           buffer = blocks.pop() || "";
-          for (const block of blocks) {
-            const evt = parseSSE(block);
+          for (let i = 0; i < blocks.length; i++) {
+            const evt = parseSSE(blocks[i]);
             if (!evt) continue;
             receivedAnyData = true;
             armWatchdog();
             if (evt.event === "ping") continue;
-            if (evt.event === "start") currentMode = evt.data?.mode || "translate";
+            if (evt.event === "start") setMode(evt.data && evt.data.mode);
             if (evt.event === "reset") {
               finalText = "";
-              result.innerHTML = '<div class="result-box result-typing md"></div>';
+              result.dataset.state = "typing";
+              result.innerHTML = "";
               resultCount.innerText = "0 字";
               continue;
             }
             if (evt.event === "delta") {
-              if (evt.data?.replace) {
-                finalText = evt.data.content || finalText;
-              } else {
-                finalText += evt.data.content || "";
-              }
+              if (evt.data && evt.data.replace) finalText = evt.data.content || finalText;
+              else finalText += (evt.data && evt.data.content) || "";
               renderResult(finalText, true);
               resultCount.innerText = finalText.length + " 字";
             }
             if (evt.event === "final") {
-              finalText = evt.data.content || finalText;
+              finalText = (evt.data && evt.data.content) || finalText;
               renderResult(finalText, false);
               resultCount.innerText = finalText.length + " 字";
             }
-            if (evt.event === "done") {
-              return finalText;
-            }
+            if (evt.event === "done") return finalText;
             if (evt.event === "error") {
-              const err = new Error(evt.data?.error || "处理失败，请再次尝试");
-              if (evt.data?.retryable === false) err.retryable = false;
+              const err = new Error((evt.data && evt.data.error) || "处理失败，请再次尝试");
+              if (evt.data && evt.data.retryable === false) err.retryable = false;
               throw err;
             }
           }
@@ -2027,14 +2296,12 @@ function getHtml(siteKey, turnstileEnabled) {
         if (buffer.trim()) {
           const evt = parseSSE(buffer);
           if (evt) {
-            if (evt.event === "final") finalText = evt.data.content || finalText;
-            if (evt.event === "delta") finalText += evt.data.content || "";
+            if (evt.event === "final") finalText = (evt.data && evt.data.content) || finalText;
+            if (evt.event === "delta") finalText += (evt.data && evt.data.content) || "";
           }
         }
         if (!finalText.trim()) {
-          if (!receivedAnyData) {
-            throw new Error("上游未返回任何数据，请检查 API_MODEL 配置或稍后重试");
-          }
+          if (!receivedAnyData) throw new Error("上游未返回任何数据，请检查模型配置或稍后重试");
           throw new Error("上游返回空内容（收到 " + chunkCount + " 个数据块），可能是模型拒绝回答，请换个说法重试");
         }
         return finalText;
@@ -2048,10 +2315,11 @@ function getHtml(siteKey, turnstileEnabled) {
         if (signal) signal.removeEventListener("abort", relayAbort);
       }
     }
+
     async function translateText(manual) {
       const text = sourceText.value.trim();
       if (!verified) {
-        statusInfo.innerText = "请先完成验证";
+        showToast("请先完成安全验证");
         return;
       }
       if (!text) {
@@ -2063,19 +2331,18 @@ function getHtml(siteKey, turnstileEnabled) {
       lastSubmittedTo = toLang.value;
       if (currentController) currentController.abort();
       currentController = new AbortController();
-      result.innerHTML = '<div class="result-box result-typing md"></div>';
+      result.dataset.state = "typing";
+      result.innerHTML = renderSkeleton();
       resultCount.innerText = "0 字";
+      setStatus(manual ? "正在翻译…" : "自动翻译中…", "busy");
       requestAnimationFrame(syncPanelHeights);
       let attempt = 0;
       while (attempt < MAX_RETRY) {
         attempt++;
         try {
-          statusInfo.innerText =
-            attempt === 1
-              ? (manual ? "正在处理中..." : "正在自动处理...")
-              : ("请求失败，正在重试（" + attempt + "/" + MAX_RETRY + "）...");
+          if (attempt > 1) setStatus("请求失败，正在重试（" + attempt + "/" + MAX_RETRY + "）", "busy");
           const finalText = await doTranslateRequest(text, currentController.signal);
-          statusInfo.innerText = currentMode === "word" ? "词汇解析完成" : "翻译完成";
+          setStatus(currentMode === "word" ? "解析完成" : "翻译完成", "ok");
           saveHistory({
             id: Date.now() + "_" + Math.random().toString(36).slice(2, 8),
             source: text,
@@ -2083,41 +2350,49 @@ function getHtml(siteKey, turnstileEnabled) {
             to: toLang.value,
             result: finalText,
             mode: currentMode,
-            time: new Date().toISOString(),
+            time: new Date().toISOString()
           });
           return;
         } catch (err) {
           if (err.name === "AbortError") return;
           if (err.retryable === false || attempt >= MAX_RETRY) {
-            statusInfo.innerText = err?.message || "处理失败，请再次尝试";
-            renderFriendlyError(err?.message);
+            setStatus("处理失败", "err");
+            renderFriendlyError(err && err.message);
             return;
           }
           await sleep(700 * attempt);
         }
       }
     }
+
+    /* ---------------- 渲染 ---------------- */
+    function renderSkeleton() {
+      return '<div class="skeleton"><span></span><span></span><span></span></div>';
+    }
     function renderResult(text, typing) {
-      const html = renderMarkdown(text);
-      result.innerHTML =
-        '<div class="result-box ' + (typing ? "result-typing " : "") + 'md">' + html + "</div>";
+      result.dataset.state = typing ? "typing" : "done";
+      const caret = typing ? '<span class="caret"></span>' : "";
+      result.innerHTML = '<div class="md">' + renderMarkdown(text) + caret + "</div>";
       requestAnimationFrame(syncPanelHeights);
     }
     function renderEmptyResult() {
+      result.dataset.state = "empty";
+      setMode("translate");
       result.innerHTML =
         '<div class="empty">' +
-        "<i>✦</i>" +
-        '<div style="font-weight:700;color:var(--text);margin-bottom:6px">等待翻译内容</div>' +
-        "<div>输入句子将翻译；输入单词将给出衍生解释</div>" +
+          '<div class="empty-icon">✦</div>' +
+          '<div class="empty-title">等待翻译内容</div>' +
+          '<div class="empty-sub">输入单词会给出释义与例句；输入句子或段落会直接翻译</div>' +
         "</div>";
       requestAnimationFrame(syncPanelHeights);
     }
     function renderFriendlyError(message) {
+      result.dataset.state = "error";
       result.innerHTML =
-        '<div class="empty">' +
-        "<i>⚠</i>" +
-        '<div style="font-weight:700;color:var(--text);margin-bottom:6px">处理失败</div>' +
-        "<div>" + escapeHtml(message || "服务暂时繁忙，请稍后再次尝试") + "</div>" +
+        '<div class="empty error">' +
+          '<div class="empty-icon">⚠</div>' +
+          '<div class="empty-title">处理失败</div>' +
+          '<div class="empty-sub">' + escapeHtml(message || "服务暂时繁忙，请稍后再次尝试") + "</div>" +
         "</div>";
       resultCount.innerText = "0 字";
       requestAnimationFrame(syncPanelHeights);
@@ -2126,41 +2401,58 @@ function getHtml(siteKey, turnstileEnabled) {
       const lines = block.split("\\n");
       let event = "message";
       let data = "";
-      for (const line of lines) {
-        if (line.startsWith("event: ")) event = line.slice(7).trim();
-        else if (line.startsWith("data: ")) data += line.slice(6);
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        if (line.indexOf("event: ") === 0) event = line.slice(7).trim();
+        else if (line.indexOf("data: ") === 0) data += line.slice(6);
       }
       if (!data) return null;
       try {
-        return { event, data: JSON.parse(data) };
-      } catch {
+        return { event: event, data: JSON.parse(data) };
+      } catch (e) {
         return null;
       }
     }
+
+    /* ---------------- Markdown ---------------- */
     function renderMarkdown(md) {
       const lines = String(md || "").replace(/\\r\\n?/g, "\\n").split("\\n");
       let out = "";
       let inP = false;
       let inOl = false;
       let inUl = false;
-      const closeP = () => { if (inP) { out += "</p>"; inP = false; } };
-      const closeOl = () => { if (inOl) { out += "</ol>"; inOl = false; } };
-      const closeUl = () => { if (inUl) { out += "</ul>"; inUl = false; } };
-      const closeAll = () => { closeP(); closeOl(); closeUl(); };
-      const inline = (text) => {
+      let inQuote = false;
+      let inCode = false;
+      const codeBuf = [];
+      const closeP = function () { if (inP) { out += "</p>"; inP = false; } };
+      const closeOl = function () { if (inOl) { out += "</ol>"; inOl = false; } };
+      const closeUl = function () { if (inUl) { out += "</ul>"; inUl = false; } };
+      const closeQuote = function () { if (inQuote) { out += "</blockquote>"; inQuote = false; } };
+      const closeAll = function () { closeP(); closeOl(); closeUl(); closeQuote(); };
+      const inline = function (text) {
         let s = escapeHtml(text);
-        s = s.replace(/\\\`([^\\\`]+)\\\`/g, "<code>$1</code>");
+        s = s.replace(RE_INLINE_CODE, "<code>$1</code>");
         s = s.replace(/\\*\\*(.+?)\\*\\*/g, "<strong>$1</strong>");
         s = s.replace(/(^|[\\s(])\\*(?!\\*)([^*]+)\\*(?!\\*)/g, "$1<em>$2</em>");
+        s = s.replace(/\\[([^\\]]+)\\]\\((https?:\\/\\/[^\\s)]+)\\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
         return s;
       };
       for (let i = 0; i < lines.length; i++) {
         const raw = lines[i];
         const line = raw.trim();
-        if (!line) {
-          closeAll();
+        if (RE_FENCE.test(line)) {
+          if (inCode) {
+            out += "<pre><code>" + escapeHtml(codeBuf.join("\\n")) + "</code></pre>";
+            codeBuf.length = 0;
+            inCode = false;
+          } else {
+            closeAll();
+            inCode = true;
+          }
           continue;
         }
+        if (inCode) { codeBuf.push(raw); continue; }
+        if (!line) { closeAll(); continue; }
         if (/^(-{3,}|\\*{3,}|_{3,})$/.test(line)) {
           closeAll();
           out += "<hr>";
@@ -2173,24 +2465,29 @@ function getHtml(siteKey, turnstileEnabled) {
           out += "<h" + level + ">" + inline(h[2]) + "</h" + level + ">";
           continue;
         }
-        const ol = line.match(/^\\d+\\.\\s*(.+)$/);
+        const quote = line.match(/^>\\s?(.*)$/);
+        if (quote) {
+          closeP(); closeOl(); closeUl();
+          if (!inQuote) { out += "<blockquote>"; inQuote = true; }
+          out += "<p>" + inline(quote[1]) + "</p>";
+          continue;
+        }
+        // 列表标记后必须跟空白，否则 "**加粗**" 会被误判成无序列表
+        const ol = line.match(/^\\d+[.)]\\s+(.+)$/);
         if (ol) {
-          closeP();
-          closeUl();
+          closeP(); closeUl(); closeQuote();
           if (!inOl) { out += "<ol>"; inOl = true; }
           out += "<li>" + inline(ol[1]) + "</li>";
           continue;
         }
-        const ul = line.match(/^[-*]\\s*(.+)$/);
+        const ul = line.match(/^[-*]\\s+(.+)$/);
         if (ul) {
-          closeP();
-          closeOl();
+          closeP(); closeOl(); closeQuote();
           if (!inUl) { out += "<ul>"; inUl = true; }
           out += "<li>" + inline(ul[1]) + "</li>";
           continue;
         }
-        closeOl();
-        closeUl();
+        closeOl(); closeUl(); closeQuote();
         if (!inP) {
           out += "<p>";
           inP = true;
@@ -2199,71 +2496,94 @@ function getHtml(siteKey, turnstileEnabled) {
           out += "<br>" + inline(line);
         }
       }
+      if (inCode && codeBuf.length) out += "<pre><code>" + escapeHtml(codeBuf.join("\\n")) + "</code></pre>";
       closeAll();
       return out || "<p></p>";
     }
+
+    /* ---------------- 历史记录 ---------------- */
     function getHistory() {
       try {
         return JSON.parse(localStorage.getItem(HISTORY_KEY) || "[]");
-      } catch {
+      } catch (e) {
         return [];
       }
     }
     function saveHistory(item) {
       const list = getHistory();
       list.unshift(item);
-      localStorage.setItem(HISTORY_KEY, JSON.stringify(list.slice(0, 30)));
+      try {
+        localStorage.setItem(HISTORY_KEY, JSON.stringify(list.slice(0, 30)));
+      } catch (e) {}
       renderHistory();
     }
-    function renderHistory() {
+    function filteredHistory() {
       const list = getHistory();
+      const q = historyQuery.trim().toLowerCase();
+      if (!q) return list;
+      return list.filter(function (it) {
+        return String(it.source || "").toLowerCase().indexOf(q) !== -1 ||
+               String(it.result || "").toLowerCase().indexOf(q) !== -1;
+      });
+    }
+    function renderHistory() {
+      const list = filteredHistory();
       if (!list.length) {
-        historyList.innerHTML = '<div style="color:var(--muted)">暂无历史记录</div>';
+        historyList.innerHTML = '<div class="history-empty">' +
+          (historyQuery.trim() ? "没有匹配的记录" : "暂无历史记录") + "</div>";
         return;
       }
-      historyList.innerHTML = list.map(it => (
-        '<div class="item" data-id="' + escapeHtml(it.id) + '">' +
-          '<p>' + escapeHtml(it.source || "") + '</p>' +
-          '<div class="meta"><span>' +
-          escapeHtml(it.mode === "word" ? "词汇解析" : (it.from + " → " + it.to)) +
-          '</span><span>' + formatTime(it.time) + '</span></div>' +
-          '<div style="display:flex;justify-content:flex-end;margin-top:6px">' +
-            '<button class="btn" data-action="delete" data-id="' + escapeHtml(it.id) + '">删除</button>' +
-          '</div>' +
-        '</div>'
-      )).join("");
+      historyList.innerHTML = list.map(function (it) {
+        const label = it.mode === "word" ? "词汇解析" : (escapeHtml(it.from || "") + " → " + escapeHtml(it.to || ""));
+        return '<div class="item" data-id="' + escapeHtml(it.id) + '">' +
+          "<p>" + escapeHtml(it.source || "") + "</p>" +
+          '<div class="meta"><span>' + label + "</span><span>" + formatTime(it.time) + "</span></div>" +
+          '<div class="item-actions"><button class="btn btn-sm" type="button" data-action="delete" data-id="' +
+            escapeHtml(it.id) + '">删除</button></div>' +
+        "</div>";
+      }).join("");
     }
     function loadHistory(id) {
-      const item = getHistory().find(x => x.id === id);
+      const item = getHistory().filter(function (x) { return x.id === id; })[0];
       if (!item) return;
       fromLang.value = item.from || "auto";
       toLang.value = item.to || "zh";
       sourceText.value = item.source || "";
       sourceCount.innerText = sourceText.value.length + " 字";
-      result.innerHTML = '<div class="result-box md">' + renderMarkdown(item.result || "") + "</div>";
+      setMode(item.mode);
+      renderResult(item.result || "", false);
       resultCount.innerText = (item.result || "").length + " 字";
       lastSubmittedText = item.source || "";
       lastSubmittedFrom = item.from || "auto";
       lastSubmittedTo = item.to || "zh";
       closeHistory();
+      syncExampleChips();
       autoGrowTextarea();
       requestAnimationFrame(syncPanelHeights);
     }
     function deleteHistoryItem(id) {
-      const list = getHistory().filter(x => x.id !== id);
-      localStorage.setItem(HISTORY_KEY, JSON.stringify(list));
+      const list = getHistory().filter(function (x) { return x.id !== id; });
+      try {
+        localStorage.setItem(HISTORY_KEY, JSON.stringify(list));
+      } catch (e) {}
       renderHistory();
+      showToast("已删除该条记录");
     }
     function clearHistory() {
-      localStorage.removeItem(HISTORY_KEY);
+      try {
+        localStorage.removeItem(HISTORY_KEY);
+      } catch (e) {}
       renderHistory();
+      showToast("历史记录已清空");
     }
     function openHistory() {
       drawer.classList.add("show");
+      drawer.setAttribute("aria-hidden", "false");
       mask.classList.add("show");
     }
     function closeHistory() {
       drawer.classList.remove("show");
+      drawer.setAttribute("aria-hidden", "true");
       mask.classList.remove("show");
     }
     function clearAll() {
@@ -2274,39 +2594,63 @@ function getHtml(siteKey, turnstileEnabled) {
       lastSubmittedFrom = "";
       lastSubmittedTo = "";
       if (currentController) currentController.abort();
+      syncExampleChips();
       renderEmptyResult();
-      statusInfo.innerText = "会话有效，可以开始翻译";
+      setStatus("可以开始翻译", "ok");
       autoGrowTextarea();
       requestAnimationFrame(syncPanelHeights);
     }
+
+    /* ---------------- 复制与主题 ---------------- */
     async function copyResult() {
       const text = result.innerText.trim();
-      if (!text || text.includes("等待翻译内容") || text.includes("处理失败")) return;
+      if (result.dataset.state !== "done" || !text) {
+        showToast("暂无可复制的内容");
+        return;
+      }
       try {
         await navigator.clipboard.writeText(text);
-        statusInfo.innerText = "结果已复制";
-      } catch {
-        statusInfo.innerText = "复制失败，请手动复制";
+        showToast("已复制到剪贴板");
+      } catch (e) {
+        try {
+          const ta = document.createElement("textarea");
+          ta.value = text;
+          ta.style.position = "fixed";
+          ta.style.opacity = "0";
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand("copy");
+          document.body.removeChild(ta);
+          showToast("已复制到剪贴板");
+        } catch (e2) {
+          showToast("复制失败，请手动选择复制");
+        }
       }
     }
     function initTheme() {
-      const t = localStorage.getItem(THEME_KEY) || "light";
+      let t = null;
+      try {
+        t = localStorage.getItem(THEME_KEY);
+      } catch (e) {}
+      if (t !== "light" && t !== "dark") {
+        t = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+      }
       document.documentElement.setAttribute("data-theme", t);
     }
     function toggleTheme() {
       const c = document.documentElement.getAttribute("data-theme") || "light";
       const n = c === "light" ? "dark" : "light";
       document.documentElement.setAttribute("data-theme", n);
-      localStorage.setItem(THEME_KEY, n);
+      try {
+        localStorage.setItem(THEME_KEY, n);
+      } catch (e) {}
+      showToast(n === "dark" ? "已切换到暗色模式" : "已切换到亮色模式");
     }
     function formatTime(iso) {
       const d = new Date(iso);
-      const y = d.getFullYear();
-      const m = String(d.getMonth() + 1).padStart(2, "0");
-      const day = String(d.getDate()).padStart(2, "0");
-      const h = String(d.getHours()).padStart(2, "0");
-      const min = String(d.getMinutes()).padStart(2, "0");
-      return y + "-" + m + "-" + day + " " + h + ":" + min;
+      if (isNaN(d.getTime())) return "";
+      const p = function (n) { return String(n).padStart(2, "0"); };
+      return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate()) + " " + p(d.getHours()) + ":" + p(d.getMinutes());
     }
     function escapeHtml(str) {
       return String(str)
