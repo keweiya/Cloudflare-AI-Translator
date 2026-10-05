@@ -716,6 +716,17 @@ async function runUpstreamToString(ctx, timeouts, options) {
 }
 
 // 统一的输出整理（流式与非流式共用）
+// 统计加粗标记数量：后处理只应整理结构，不应破坏 markdown 语法
+function emphasisMarkerCount(text) {
+  const found = String(text || "").match(/\*\*/g);
+  return found ? found.length : 0;
+}
+
+// 自检：整理前后的语法标记必须一致，否则说明清洗逻辑改坏了内容
+function markdownStructureIntact(before, after) {
+  return emphasisMarkerCount(before) === emphasisMarkerCount(after);
+}
+
 function finalizeOutput(rawText, plan) {
   const isSingleWord = !!(plan && plan.isSingleWord);
   const cleaned = cleanupModelOutput(rawText, {
@@ -723,6 +734,20 @@ function finalizeOutput(rawText, plan) {
     allowPartialReasoning: false,
   });
   let out = isSingleWord ? normalizeWordMarkdownOutput(cleaned, plan.wordTemplate) : cleaned;
+  // 兜底：排版整理一旦破坏了 markdown 语法（例如拆断了 ** 标记），
+  // 宁可少一点排版，也不要把坏掉的语法交给用户
+  if (!markdownStructureIntact(cleaned, out)) {
+    console.error(
+      JSON.stringify({
+        timestamp: new Date().toISOString(),
+        level: "WARN",
+        event: "MARKDOWN_NORMALIZE_DAMAGED_OUTPUT",
+        before: emphasisMarkerCount(cleaned),
+        after: emphasisMarkerCount(out),
+      })
+    );
+    out = cleaned;
+  }
   if (!out.trim()) {
     out = isSingleWord
       ? "# 暂无释义\n\n- 抱歉，未能为该输入生成有效的词汇解析。"
