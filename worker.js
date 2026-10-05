@@ -202,13 +202,17 @@ async function handleTranslateStream(request, env) {
       }
     }
 
-    const targetModel = upstream.model;
+    const modelChain =
+      Array.isArray(upstream.models) && upstream.models.length ? upstream.models : [upstream.model];
+    const targetModel = modelChain[0];
     const timeouts = resolveTimeouts(env);
     const upstreamCtx = {
       useCFAI: upstream.useCFAI,
       baseUrl: upstream.baseUrl,
       apiKey: upstream.apiKey,
       model: targetModel,
+      maxTokens: upstream.maxTokens,
+      extraParams: upstream.extraParams,
       messages,
       env,
     };
@@ -297,6 +301,7 @@ async function handleTranslateStream(request, env) {
           let attempt = 0;
           let succeeded = false;
           let lastError = null;
+          let succeededModel = targetModel;
 
           while (attempt < timeouts.maxAttempts && !succeeded && !clientGone) {
             if (Date.now() >= deadline) {
@@ -304,10 +309,12 @@ async function handleTranslateStream(request, env) {
               break;
             }
             attempt++;
+            // 第 1 次用主模型，之后依次降级到备用模型
+            const attemptModel = modelChain[Math.min(attempt - 1, modelChain.length - 1)];
             if (attempt > 1) {
               fullText = "";
               sentLive = "";
-              send("reset", { attempt });
+              send("reset", { attempt, model: attemptModel });
               await sleepMs(Math.min(600 * attempt, 2000));
               if (clientGone) break;
             }
@@ -332,7 +339,10 @@ async function handleTranslateStream(request, env) {
             }, attemptBudget);
 
             try {
-              const upstreamBody = await openUpstreamStream(upstreamCtx, ac.signal);
+              const upstreamBody = await openUpstreamStream(
+                { ...upstreamCtx, model: attemptModel },
+                ac.signal
+              );
               const reader = upstreamBody.getReader();
               activeReader = reader;
               armIdle();
@@ -377,6 +387,7 @@ async function handleTranslateStream(request, env) {
               }
               pushLive();
               succeeded = true;
+              succeededModel = attemptModel;
             } catch (err) {
               lastError = err;
               console.error(
@@ -386,7 +397,7 @@ async function handleTranslateStream(request, env) {
                   event: "API_FETCH_FAILED",
                   message: err && err.message ? err.message : String(err),
                   retry: `${attempt}/${timeouts.maxAttempts}`,
-                  model: targetModel,
+                  model: attemptModel,
                   sourceTextSnippet: text.slice(0, 100),
                 })
               );
@@ -407,8 +418,11 @@ async function handleTranslateStream(request, env) {
 
           if (!succeeded) {
             if (!clientGone) {
+              const detail = describeUpstreamFailure(lastError);
+              const tried =
+                modelChain.length > 1 ? "（已尝试模型：" + modelChain.join("、") + "）" : "";
               send("error", {
-                error: describeUpstreamFailure(lastError),
+                error: detail + tried,
                 retryable: isRetryableUpstreamError(lastError),
               });
             }
@@ -436,7 +450,9 @@ async function handleTranslateStream(request, env) {
                 to,
                 wordTemplate,
                 env,
-                model: targetModel,
+                model: succeededModel,
+                maxTokens: upstreamCtx.maxTokens,
+                extraParams: upstreamCtx.extraParams,
                 useCFAI: upstreamCtx.useCFAI,
                 baseUrl: upstreamCtx.baseUrl,
                 apiKey: upstreamCtx.apiKey,
@@ -518,7 +534,45 @@ function resolveUpstreamConfig(env) {
       ? env.CF_MODEL || env.CUSTOM_API_MODEL || env.API_MODEL || ""
       : env.CUSTOM_API_MODEL || env.API_MODEL || ""
   ).trim();
-  return { useCFAI, baseUrl, apiKey, model };
+  // 主模型失败时按顺序降级到备用模型，避免单个模型抽风就一直失败
+  const fallbackRaw = useCFAI
+    ? env.CF_MODEL_FALLBACK
+    : env.CUSTOM_API_MODEL_FALLBACK || env.CF_MODEL_FALLBACK;
+  const models = model ? [model] : [];
+  for (const item of String(fallbackRaw || "").split(",")) {
+    const candidate = item.trim();
+    if (candidate && !models.includes(candidate)) models.push(candidate);
+  }
+  return {
+    useCFAI,
+    baseUrl,
+    apiKey,
+    model,
+    models,
+    // 部分 Workers AI 模型默认 max_tokens 很小（如 llama-3.2-3b 仅 256），不显式指定会被截断
+    maxTokens: envNumber(env, "CF_MAX_TOKENS", 4096),
+    extraParams: parseJsonObject(env.CF_EXTRA_PARAMS),
+  };
+}
+
+function parseJsonObject(raw) {
+  const text = String(raw || "").trim();
+  if (!text) return null;
+  try {
+    const parsed = JSON.parse(text);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+// Workers AI 入参：显式带上 max_tokens，避免模型默认值过小导致译文被截断
+function buildCFInputs(ctx, stream) {
+  const inputs = { messages: ctx.messages, stream: !!stream };
+  const maxTokens = Number(ctx.maxTokens);
+  if (Number.isFinite(maxTokens) && maxTokens > 0) inputs.max_tokens = Math.round(maxTokens);
+  if (ctx.extraParams) Object.assign(inputs, ctx.extraParams);
+  return inputs;
 }
 
 function resolveTimeouts(env) {
@@ -651,17 +705,13 @@ function textToStream(text) {
 
 async function openUpstreamStream(ctx, signal) {
   if (ctx.useCFAI) {
-    const inputs = { messages: ctx.messages, stream: true };
     let result;
     try {
-      result = await raceWithSignal(ctx.env.AI.run(ctx.model, inputs), signal);
+      result = await raceWithSignal(ctx.env.AI.run(ctx.model, buildCFInputs(ctx, true)), signal);
     } catch (err) {
       if (signal && signal.aborted) throw abortError(signal);
       // 部分模型不支持 stream:true，回退到一次性返回
-      result = await raceWithSignal(
-        ctx.env.AI.run(ctx.model, { messages: ctx.messages }),
-        signal
-      );
+      result = await raceWithSignal(ctx.env.AI.run(ctx.model, buildCFInputs(ctx, false)), signal);
     }
     if (result && typeof result.getReader === "function") return result;
     if (result && result.body && typeof result.body.getReader === "function") return result.body;
@@ -990,7 +1040,7 @@ async function runWordExampleRepair(draft, ctx, signal) {
   if (ctx.useCFAI) {
     if (!ctx.env.AI) return "";
     const result = await raceWithSignal(
-      ctx.env.AI.run(ctx.model, { messages, stream: false }),
+      ctx.env.AI.run(ctx.model, buildCFInputs({ messages, maxTokens: ctx.maxTokens, extraParams: ctx.extraParams }, false)),
       signal
     );
     return extractResultText(result);
