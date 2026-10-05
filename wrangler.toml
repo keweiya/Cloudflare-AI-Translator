@@ -1,0 +1,39 @@
+# ============================================================================
+# Cloudflare Workers 部署配置
+#
+# 部署方式二选一：
+#   1) 仓库 README 顶部的 "Deploy to Cloudflare" 按钮（fork 后一键部署）
+#   2) 本地执行： npx wrangler deploy
+#
+# 密钥请勿写在本文件里，用命令写入（会加密保存）：
+#   npx wrangler secret put SESSION_SECRET
+#   npx wrangler secret put TURNSTILE_SECRET_KEY
+#   npx wrangler secret put CUSTOM_API_KEY
+# ============================================================================
+
+name = "cloudflare-ai-translator"
+main = "worker.js"
+compatibility_date = "2026-09-01"
+
+# Workers AI 绑定：代码里通过 env.AI 调用（CF_AI=true 时使用）
+[ai]
+binding = "AI"
+
+# 默认配置，与 worker.js 内置默认值一致，按需修改
+[vars]
+# 使用 Cloudflare Workers AI（true 时忽略下面的 CUSTOM_API_* 配置）
+CF_AI = "true"
+# 模型：glm-4.7-flash 支持 100+ 语言、上下文 131k，翻译场景性价比高
+CF_MODEL = "@cf/zai-org/glm-4.7-flash"
+# 单次生成的最大 token 数；翻译长文建议不低于 8192
+CF_MAX_TOKENS = "8192"
+# 关闭思考链：推理模型先"思考"再回答，既慢又费额度
+CF_EXTRA_PARAMS = '{"chat_template_kwargs":{"enable_thinking":false}}'
+# 人机验证开关。设为 false 时任何知道地址的人都能消耗你的 AI 额度，
+# 公开部署建议改为 true 并配置 TURNSTILE_SITE_KEY / TURNSTILE_SECRET_KEY。
+ENABLE_TURNSTILE = "false"
+
+# 使用自定义 OpenAI 兼容接口时，把上面改成 CF_AI = "false"，并取消下面注释：
+# CUSTOM_API_BASE_URL = "https://api.openai.com/v1"
+# CUSTOM_API_MODEL = "gpt-4o-mini"
+# CUSTOM_API_KEY 属于密钥，请用 `npx wrangler secret put CUSTOM_API_KEY` 设置

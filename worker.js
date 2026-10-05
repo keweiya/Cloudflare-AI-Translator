@@ -1,3 +1,36 @@
+// ============================================================================
+// 默认配置（环境变量未设置时生效；wrangler.toml 中配置了同样的值）
+// ============================================================================
+const DEFAULT_CF_MODEL = "@cf/zai-org/glm-4.7-flash";
+const DEFAULT_CF_MAX_TOKENS = 8192;
+// 默认关闭思考链：推理模型先"思考"再回答，既慢又费额度，小 token 上限下还会把正文挤空
+const DEFAULT_CF_EXTRA_PARAMS = { chat_template_kwargs: { enable_thinking: false } };
+
+// 前端实时刷新节流：避免每个 token 都做一次全量字符串处理（节省 Worker CPU）
+const LIVE_PUSH_INTERVAL_MS = 100;
+
+const CORS_HEADERS = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type, Authorization",
+};
+
+const JSON_HEADERS = {
+  "Content-Type": "application/json; charset=utf-8",
+  ...CORS_HEADERS,
+};
+
+const SSE_HEADERS = {
+  "Content-Type": "text/event-stream; charset=utf-8",
+  "Cache-Control": "no-cache, no-transform",
+  "X-Accel-Buffering": "no",
+  Connection: "keep-alive",
+  ...CORS_HEADERS,
+};
+
+// ============================================================================
+// 1. 入口与路由
+// ============================================================================
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -19,6 +52,9 @@ export default {
   },
 };
 
+// ============================================================================
+// 2. 会话与 Turnstile 校验
+// ============================================================================
 function isTurnstileEnabled(env) {
   const raw = String(env.ENABLE_TURNSTILE ?? "true").trim().toLowerCase();
   return !["false", "0", "off", "no"].includes(raw);
@@ -53,19 +89,16 @@ async function handleVerify(request, env) {
     const cookie = await buildSessionCookie(ip, env.SESSION_SECRET);
     return new Response(JSON.stringify({ ok: true }), {
       status: 200,
-      headers: {
-        "Content-Type": "application/json; charset=utf-8",
-        "Set-Cookie": cookie,
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
-        "Access-Control-Allow-Headers": "Content-Type, Authorization",
-      },
+      headers: { ...JSON_HEADERS, "Set-Cookie": cookie },
     });
   } catch {
     return json({ error: "验证失败，请重试" }, 500);
   }
 }
 
+// ============================================================================
+// 3. 翻译核心流程
+// ============================================================================
 async function handleTranslateStream(request, env) {
   try {
     const turnstileEnabled = isTurnstileEnabled(env);
@@ -202,9 +235,7 @@ async function handleTranslateStream(request, env) {
       }
     }
 
-    const modelChain =
-      Array.isArray(upstream.models) && upstream.models.length ? upstream.models : [upstream.model];
-    const targetModel = modelChain[0];
+    const targetModel = upstream.model;
     const timeouts = resolveTimeouts(env);
     const upstreamCtx = {
       useCFAI: upstream.useCFAI,
@@ -229,6 +260,8 @@ async function handleTranslateStream(request, env) {
         let activeReader = null;
         let fullText = "";
         let sentLive = "";
+        let lastLiveAt = 0;
+        let strictLanguage = false;
 
         const send = (event, data) => {
           if (clientGone) return false;
@@ -269,11 +302,15 @@ async function handleTranslateStream(request, env) {
         };
 
         try {
-        // 先发 start，立即让浏览器拿到响应头，避免首字节等待导致网关超时
+          // 先发 start，立即让浏览器拿到响应头，避免首字节等待导致网关超时
           send("start", { ok: true, mode: isSingleWord ? "word" : "translate" });
 
-          const pushLive = () => {
+          // 实时推送节流：长文时逐 token 做全量字符串处理很费 CPU（免费版只有 10ms CPU）
+          const pushLive = (force = false) => {
             if (clientGone) return;
+            const now = Date.now();
+            if (!force && now - lastLiveAt < LIVE_PUSH_INTERVAL_MS) return;
+            lastLiveAt = now;
             if (isSingleWord) {
               const live = normalizeWordMarkdownOutput(
                 cleanupModelOutput(fullText, {
@@ -301,7 +338,6 @@ async function handleTranslateStream(request, env) {
           let attempt = 0;
           let succeeded = false;
           let lastError = null;
-          let succeededModel = targetModel;
 
           while (attempt < timeouts.maxAttempts && !succeeded && !clientGone) {
             if (Date.now() >= deadline) {
@@ -309,12 +345,11 @@ async function handleTranslateStream(request, env) {
               break;
             }
             attempt++;
-            // 第 1 次用主模型，之后依次降级到备用模型
-            const attemptModel = modelChain[Math.min(attempt - 1, modelChain.length - 1)];
             if (attempt > 1) {
               fullText = "";
               sentLive = "";
-              send("reset", { attempt, model: attemptModel });
+              lastLiveAt = 0;
+              send("reset", { attempt });
               await sleepMs(Math.min(600 * attempt, 2000));
               if (clientGone) break;
             }
@@ -339,8 +374,11 @@ async function handleTranslateStream(request, env) {
             }, attemptBudget);
 
             try {
+              const attemptMessages = strictLanguage
+                ? buildStrictLanguageMessages(messages, to)
+                : messages;
               const upstreamBody = await openUpstreamStream(
-                { ...upstreamCtx, model: attemptModel },
+                { ...upstreamCtx, messages: attemptMessages },
                 ac.signal
               );
               const reader = upstreamBody.getReader();
@@ -385,9 +423,17 @@ async function handleTranslateStream(request, env) {
               if (!fullText.trim()) {
                 throw new Error("Upstream returned no usable text tokens.");
               }
-              pushLive();
+              // 语言自检：译文语言不对时用更严格的提示词重来；最后一次仍不对则直接报错，
+              // 宁可提示失败，也不把"语言不对的结果"当成译文交给用户
+              if (!isSingleWord && isOutputLanguageMismatch(stripReasoningArtifacts(fullText, true), to)) {
+                if (attempt < timeouts.maxAttempts) {
+                  strictLanguage = true;
+                  throw new Error("Output language mismatch, retrying with a stricter prompt.");
+                }
+                throw new Error("Model kept answering in the wrong language.");
+              }
+              pushLive(true);
               succeeded = true;
-              succeededModel = attemptModel;
             } catch (err) {
               lastError = err;
               console.error(
@@ -397,7 +443,7 @@ async function handleTranslateStream(request, env) {
                   event: "API_FETCH_FAILED",
                   message: err && err.message ? err.message : String(err),
                   retry: `${attempt}/${timeouts.maxAttempts}`,
-                  model: attemptModel,
+                  model: targetModel,
                   sourceTextSnippet: text.slice(0, 100),
                 })
               );
@@ -418,11 +464,8 @@ async function handleTranslateStream(request, env) {
 
           if (!succeeded) {
             if (!clientGone) {
-              const detail = describeUpstreamFailure(lastError);
-              const tried =
-                modelChain.length > 1 ? "（已尝试模型：" + modelChain.join("、") + "）" : "";
               send("error", {
-                error: detail + tried,
+                error: describeUpstreamFailure(lastError),
                 retryable: isRetryableUpstreamError(lastError),
               });
             }
@@ -450,7 +493,7 @@ async function handleTranslateStream(request, env) {
                 to,
                 wordTemplate,
                 env,
-                model: succeededModel,
+                model: targetModel,
                 maxTokens: upstreamCtx.maxTokens,
                 extraParams: upstreamCtx.extraParams,
                 useCFAI: upstreamCtx.useCFAI,
@@ -490,15 +533,7 @@ async function handleTranslateStream(request, env) {
 
     return new Response(stream, {
       status: 200,
-      headers: {
-        "Content-Type": "text/event-stream; charset=utf-8",
-        "Cache-Control": "no-cache, no-transform",
-        "X-Accel-Buffering": "no",
-        Connection: "keep-alive",
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
-        "Access-Control-Allow-Headers": "Content-Type, Authorization",
-      },
+      headers: SSE_HEADERS,
     });
   } catch (globalErr) {
     console.error(
@@ -513,6 +548,9 @@ async function handleTranslateStream(request, env) {
   }
 }
 
+// ============================================================================
+// 4. 上游配置、超时与请求执行
+// ============================================================================
 function envNumber(env, key, fallback) {
   const raw = env ? env[key] : undefined;
   if (raw === undefined || raw === null || raw === "") return fallback;
@@ -531,27 +569,17 @@ function resolveUpstreamConfig(env) {
   const apiKey = String(env.CUSTOM_API_KEY || env.API_KEY || "").trim();
   const model = String(
     useCFAI
-      ? env.CF_MODEL || env.CUSTOM_API_MODEL || env.API_MODEL || ""
+      ? env.CF_MODEL || DEFAULT_CF_MODEL
       : env.CUSTOM_API_MODEL || env.API_MODEL || ""
   ).trim();
-  // 主模型失败时按顺序降级到备用模型，避免单个模型抽风就一直失败
-  const fallbackRaw = useCFAI
-    ? env.CF_MODEL_FALLBACK
-    : env.CUSTOM_API_MODEL_FALLBACK || env.CF_MODEL_FALLBACK;
-  const models = model ? [model] : [];
-  for (const item of String(fallbackRaw || "").split(",")) {
-    const candidate = item.trim();
-    if (candidate && !models.includes(candidate)) models.push(candidate);
-  }
   return {
     useCFAI,
     baseUrl,
     apiKey,
     model,
-    models,
     // 部分 Workers AI 模型默认 max_tokens 很小（如 llama-3.2-3b 仅 256），不显式指定会被截断
-    maxTokens: envNumber(env, "CF_MAX_TOKENS", 4096),
-    extraParams: parseJsonObject(env.CF_EXTRA_PARAMS),
+    maxTokens: envNumber(env, "CF_MAX_TOKENS", DEFAULT_CF_MAX_TOKENS),
+    extraParams: parseJsonObject(env.CF_EXTRA_PARAMS) || DEFAULT_CF_EXTRA_PARAMS,
   };
 }
 
@@ -567,11 +595,11 @@ function parseJsonObject(raw) {
 }
 
 // Workers AI 入参：显式带上 max_tokens，避免模型默认值过小导致译文被截断
-function buildCFInputs(ctx, stream) {
+function buildCFInputs(ctx, stream, withExtraParams = true) {
   const inputs = { messages: ctx.messages, stream: !!stream };
   const maxTokens = Number(ctx.maxTokens);
   if (Number.isFinite(maxTokens) && maxTokens > 0) inputs.max_tokens = Math.round(maxTokens);
-  if (ctx.extraParams) Object.assign(inputs, ctx.extraParams);
+  if (withExtraParams && ctx.extraParams) Object.assign(inputs, ctx.extraParams);
   return inputs;
 }
 
@@ -705,14 +733,25 @@ function textToStream(text) {
 
 async function openUpstreamStream(ctx, signal) {
   if (ctx.useCFAI) {
-    let result;
-    try {
-      result = await raceWithSignal(ctx.env.AI.run(ctx.model, buildCFInputs(ctx, true)), signal);
-    } catch (err) {
-      if (signal && signal.aborted) throw abortError(signal);
-      // 部分模型不支持 stream:true，回退到一次性返回
-      result = await raceWithSignal(ctx.env.AI.run(ctx.model, buildCFInputs(ctx, false)), signal);
+    // 依次尝试：带扩展参数流式 -> 去掉扩展参数流式 -> 去掉扩展参数一次性返回
+    // 换模型时若某个模型不认 CF_EXTRA_PARAMS，也不会因此报错
+    const attempts = [
+      () => ctx.env.AI.run(ctx.model, buildCFInputs(ctx, true, true)),
+      () => ctx.env.AI.run(ctx.model, buildCFInputs(ctx, true, false)),
+      () => ctx.env.AI.run(ctx.model, buildCFInputs(ctx, false, false)),
+    ];
+    let result = null;
+    let lastErr = null;
+    for (let i = 0; i < attempts.length; i++) {
+      try {
+        result = await raceWithSignal(attempts[i](), signal);
+        break;
+      } catch (err) {
+        if (signal && signal.aborted) throw abortError(signal);
+        lastErr = err;
+      }
     }
+    if (!result) throw lastErr || new Error("Workers AI request failed.");
     if (result && typeof result.getReader === "function") return result;
     if (result && result.body && typeof result.body.getReader === "function") return result.body;
     if (result && typeof result[Symbol.asyncIterator] === "function") {
@@ -778,6 +817,8 @@ function isRetryableUpstreamError(err) {
   if (/no data from upstream|timed? ?out|exceeded the total time limit|client disconnected/i.test(message)) {
     return false;
   }
+  // 多次重试后语言仍然不对，再重试也是同样结果
+  if (/wrong language|language mismatch/i.test(message)) return false;
   const status = Number(err.status);
   if (Number.isFinite(status) && status >= 400 && status < 500 && status !== 429) return false;
   if (/no usable text tokens|empty body|empty response/i.test(message)) return false;
@@ -789,6 +830,9 @@ function describeUpstreamFailure(err) {
   if (err && err.name === "AbortError") {
     return "上游模型长时间没有返回数据（超时），已自动重试。请稍后再试，或更换响应更快的模型。";
   }
+  if (/wrong language|language mismatch/i.test(message)) {
+    return "模型没有按目标语言输出（重试后仍不正确）。请重新点击翻译，或换一个模型。";
+  }
   if (/no data from upstream|timed? ?out|exceeded the total time limit/i.test(message)) {
     return "上游模型响应超时。请稍后再试，或更换响应更快的模型。";
   }
@@ -799,6 +843,9 @@ function describeUpstreamFailure(err) {
   return "上游服务错误：" + message.slice(0, 200);
 }
 
+// ============================================================================
+// 5. 模型输出清理（思维链、代码围栏、前缀、元注释）
+// ============================================================================
 function cleanupTail(text) {
   let t = String(text || "").trim();
   const tailPatterns = [
@@ -806,6 +853,7 @@ function cleanupTail(text) {
     /\n*[-*]?\s*if needed[^\n]*$/gi,
     /\n*[-*]?\s*i can also[^\n]*$/gi,
     /\n*[-*]?\s*let me know[^\n]*$/gi,
+    /\n*[-*]?\s*(?:如需|如果需?要|希望)[^\n]*(?:帮助|有用|告知)[^\n]*$/g,
   ];
   for (const p of tailPatterns) t = t.replace(p, "");
   return t.trim();
@@ -816,6 +864,7 @@ function cleanupModelOutput(text, options = {}) {
   // ★ 如果原始内容就很短，不要过度清洗
   if (t.length < 50) {
     t = unwrapMarkdownFence(t, !!options.allowPartialFence);
+    if (options.stripMetaNotes) t = stripTranslationMetaLines(t);
     return t.trim();
   }
   t = unwrapMarkdownFence(t, !!options.allowPartialFence);
@@ -841,10 +890,24 @@ function stripReasoningArtifacts(text, allowPartial = false) {
   return t.trim();
 }
 
+// 去掉模型爱加的"译文："前缀和末尾的说明性注释，只保留纯译文
 function stripTranslationMetaLines(text) {
-  return String(text || "")
-    .replace(/\n?[-*]?\s*\*?\(?(?:\u8BED\u5883\u8BC6\u522B|context\s*recognition|context|note)[:?][^\n]*\)?\*?\s*$/i, "")
-    .trim();
+  let t = String(text || "");
+  // 前导前缀：译文： / 翻译结果： / Here is the translation: ...
+  t = t.replace(
+    /^\s*(?:译文|翻译结果|翻译如下|以下是(?:译文|翻译(?:结果)?)|下面是(?:译文|翻译(?:结果)?))\s*[:：]?\s*/i,
+    ""
+  );
+  t = t.replace(
+    /^\s*(?:here(?:'| i)?s? (?:is )?the translation|translation|translated (?:text|version)|output)\s*[:：]\s*/i,
+    ""
+  );
+  // 末尾元注释：语境识别：xxx / Note: xxx
+  t = t.replace(
+    /\n?[-*]?\s*\*?\(?(?:语境识别|context\s*recognition|context|note)[:?][^\n]*\)?\*?\s*$/i,
+    ""
+  );
+  return t.trim();
 }
 
 function normalizeWordMarkdownOutput(text, template = null) {
@@ -1098,6 +1161,9 @@ function unwrapMarkdownFence(text, allowPartial = false) {
     .trim();
 }
 
+// ============================================================================
+// 6. 语言检测、提示词与词汇模式
+// ============================================================================
 function detectSingleWordQuery(text, from) {
   const t = (text || "").trim();
   if (!t) return false;
@@ -1155,6 +1221,63 @@ function mapLangName(code) {
     ru: "Russian",
   };
   return m[code] || code || "Target Language";
+}
+
+// ============================================================================
+// 输出语言自检
+// 只做"明显不对"的判定（例如目标中文却一个汉字都没有），避免误伤专有名词、
+// 技术术语和代码片段。命中时用更严格的提示词重新生成一次。
+// ============================================================================
+function countMatches(text, re) {
+  const found = String(text || "").match(re);
+  return found ? found.length : 0;
+}
+
+function isOutputLanguageMismatch(text, to) {
+  const t = String(text || "").trim();
+  if (!t) return false;
+  const dst = String(to || "").trim().toLowerCase();
+  const cjk = countMatches(t, /[\u4E00-\u9FFF]/g);
+  const kana = countMatches(t, /[\u3040-\u30FF]/g);
+  const hangul = countMatches(t, /[\uAC00-\uD7AF]/g);
+  const cyrillic = countMatches(t, /[\u0400-\u04FF]/g);
+  const latin = countMatches(t, /[A-Za-z]/g);
+  // 内容太短时不做判断，避免把专有名词、术语、代码当成"语言不对"
+  if (cjk + kana + hangul + cyrillic + latin < 12) return false;
+  switch (dst) {
+    case "zh":
+      return cjk === 0 && latin >= 12;
+    case "ja":
+      return kana === 0 && cjk === 0;
+    case "ko":
+      return hangul === 0;
+    case "ru":
+      return cyrillic === 0 && latin >= 12;
+    case "en":
+      return cjk + kana + hangul > 10 || (cjk + kana + hangul > 0 && latin < 20);
+    default:
+      // fr / de / es 与英文同为拉丁字母，无法可靠区分，不做判定
+      return false;
+  }
+}
+
+// 语言不对时的补救：在系统提示后追加一条强制要求，再生成一次
+function buildStrictLanguageMessages(messages, to) {
+  const target = mapLangName(to);
+  const reminder = {
+    role: "system",
+    content:
+      "STRICT LANGUAGE REQUIREMENT (the previous attempt was rejected):\n" +
+      "- Your entire answer MUST be written in " + target + " only.\n" +
+      "- Do not leave any sentence in the source language.\n" +
+      "- Translate every sentence, including headings, list items and table cells.\n" +
+      "- Output the translation only, with no explanation and no notes.",
+  };
+  const out = Array.isArray(messages) ? messages.slice() : [];
+  const firstSystem = out.findIndex((m) => m && m.role === "system");
+  if (firstSystem === -1) out.unshift(reminder);
+  else out.splice(firstSystem + 1, 0, reminder);
+  return out;
 }
 
 function buildLanguageGuard(from, to, mode) {
@@ -1290,6 +1413,9 @@ function getWordExplainTemplate(code) {
   return templates[code] || templates.zh;
 }
 
+// ============================================================================
+// 7. 工具函数
+// ============================================================================
 async function verifyTurnstile({ secret, token, ip }) {
   const formData = new FormData();
   formData.append("secret", secret);
@@ -1369,37 +1495,21 @@ function createImmediateTranslateStream(content) {
   });
   return new Response(stream, {
     status: 200,
-    headers: {
-      "Content-Type": "text/event-stream; charset=utf-8",
-      "Cache-Control": "no-cache, no-transform",
-      Connection: "keep-alive",
-      "Access-Control-Allow-Origin": "*",
-      "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
-      "Access-Control-Allow-Headers": "Content-Type, Authorization",
-    },
+    headers: SSE_HEADERS,
   });
 }
 
 function json(data, status = 200) {
   return new Response(JSON.stringify(data), {
     status,
-    headers: {
-      "Content-Type": "application/json; charset=utf-8",
-      "Access-Control-Allow-Origin": "*",
-      "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
-      "Access-Control-Allow-Headers": "Content-Type, Authorization",
-    },
+    headers: JSON_HEADERS,
   });
 }
 
 function handleOptions() {
   return new Response(null, {
     status: 204,
-    headers: {
-      "Access-Control-Allow-Origin": "*",
-      "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
-      "Access-Control-Allow-Headers": "Content-Type, Authorization",
-    },
+    headers: CORS_HEADERS,
   });
 }
 
@@ -1409,6 +1519,9 @@ function htmlResponse(html) {
   });
 }
 
+// ============================================================================
+// 8. 前端页面（单文件内联，无需额外静态资源）
+// ============================================================================
 function getHtml(siteKey, turnstileEnabled) {
   return `<!DOCTYPE html>
 <html lang="zh-CN" data-theme="light">

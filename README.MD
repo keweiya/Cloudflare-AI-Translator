@@ -2,6 +2,11 @@
 
 基于 **Cloudflare Workers** 构建的高性能 AI 翻译助手。集成了流式传输 (SSE)、长句翻译、单词深度解析以及 Cloudflare Turnstile 安全校验。
 
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/keweiya/Cloudflare-AI-Translator)
+
+> 点上面的按钮即可把本项目部署到自己的 Cloudflare 账号（自动创建 Worker 并绑定 Workers AI）。
+> 仓库需为公开仓库；部署完成后按提示补齐密钥即可使用。
+
 ### ✨ 项目特性
 
 * **⚡ 边缘加速**：运行在 Cloudflare 全球边缘网络，响应极速。
@@ -14,18 +19,26 @@
 
 ---
 
-### 🚀 快速部署 (极简版)
+### 🚀 部署方式（三选一）
 
-本项目采用**单文件部署**模式，无需本地开发环境。
+**方式 A：一键部署（推荐）** — 点本文顶部的 **Deploy to Cloudflare** 按钮，按提示授权即可，Workers AI 绑定和默认参数会自动配置。
 
-#### 第一步：创建 Worker
-1.  登录 [Cloudflare 控制台](https://dash.cloudflare.com/)。
-2.  进入 **Workers & Pages** -> **Create application** -> **Create Worker**。
-3.  设置名称（如 `ai-translator`）并点击 **Deploy**。
-4.  点击 **Edit Code**，将本仓库 `worker.js` 中的全部代码复制并替换掉原有代码。
-5.  点击右上角 **Save and Deploy**。
+**方式 B：Wrangler CLI** — 仓库已内置 [`wrangler.toml`](wrangler.toml)：
 
-#### 第二步：配置环境变量 (必需)
+```bash
+git clone https://github.com/keweiya/Cloudflare-AI-Translator.git
+cd Cloudflare-AI-Translator
+npx wrangler deploy
+```
+
+**方式 C：手动粘贴（极简）**
+
+1. 登录 [Cloudflare 控制台](https://dash.cloudflare.com/)，进入 **Workers & Pages** -> **Create application** -> **Create Worker**。
+2. 设置名称并点击 **Deploy**。
+3. 点击 **Edit Code**，将本仓库 `worker.js` 中的全部代码复制并替换掉原有代码，点击 **Save and Deploy**。
+4. 在 **Settings** -> **Bindings** 添加 **Workers AI** 绑定，变量名必须是 `AI`。
+
+#### 配置环境变量 (必需)
 在 Worker 管理界面，进入 **Settings** -> **Variables**，添加以下环境变量：
 
 | 变量名称 | 类型 | 说明 | 示例值 |
@@ -39,42 +52,47 @@
 | **`SESSION_SECRET`** | **Secret** | 随机字符串，用于会话签名 | `随便输入一段长字符` |
 
 > **注意**：敏感信息请务必使用 **Secret** 类型存储（点击 `Encrypt` 加密）。
+>
+> ⚠️ `ENABLE_TURNSTILE=false` 时接口完全开放，**任何知道地址的人都能消耗你的 AI 额度**。公开部署请务必开启验证。
 
 #### 使用 Cloudflare Workers AI（可选）
 
 不接第三方接口时，可以绑定 Workers AI：
 
-| 变量名称 | 类型 | 说明 | 示例值 |
+| 变量名称 | 类型 | 说明 | 默认值 |
 | :--- | :--- | :--- | :--- |
 | **`CF_AI`** | Text | 设为 `true` 时使用 Workers AI 绑定（无需 `CUSTOM_API_*`） | `false` |
-| **`CF_MODEL`** | Text | Workers AI 模型名，`CF_AI=true` 时必填 | `@cf/meta/llama-3.2-3b-instruct` |
-| **`CF_MODEL_FALLBACK`** | Text | 备用模型，逗号分隔；主模型失败自动降级（可选） | `@cf/ibm-granite/granite-4.0-h-micro` |
-| **`CF_MAX_TOKENS`** | Text | 单次生成的最大 token 数（默认 `4096`） | `8192` |
-| **`CF_EXTRA_PARAMS`** | Text | 透传给模型的额外参数（JSON 字符串，可选） | `{"chat_template_kwargs":{"enable_thinking":false}}` |
+| **`CF_MODEL`** | Text | Workers AI 模型名 | `@cf/zai-org/glm-4.7-flash` |
+| **`CF_MAX_TOKENS`** | Text | 单次生成的最大 token 数 | `8192` |
+| **`CF_EXTRA_PARAMS`** | Text | 透传给模型的额外参数（JSON 字符串） | `{"chat_template_kwargs":{"enable_thinking":false}}` |
 
 同时在 **Settings** -> **Bindings** 中添加 `AI` 绑定（Workers AI）。
 
-> **`CF_MAX_TOKENS` 很重要**：部分 Workers AI 模型默认输出上限极小（例如 `llama-3.2-3b-instruct` 默认只有 256 token），不显式指定会导致长文译文被截断。翻译长文章时建议调到 `8192`。
+> **三个默认值都可以不配**：不设置这些变量时，代码内置的默认值就是上表右列，也就是 `glm-4.7-flash` + 关闭思考链 + `max_tokens=8192`。
+>
+> **`CF_MAX_TOKENS` 很重要**：部分 Workers AI 模型默认输出上限极小（例如 `llama-3.2-3b-instruct` 默认只有 256 token），不显式指定会导致长文译文被截断。
 
 #### 怎么选模型（内容翻译场景）
 
 挑模型时看模型页上的标签，避开两个坑：
 
-1. **带 `Reasoning` 标记的模型**（如 `glm-4.7-flash`、`qwen3-30b-a3b-fp8`、`gemma-4-26b-a4b-it`）会先"思考"再回答：慢，思考的 token 同样计费，小 `max_tokens` 下还可能把答案挤没，表现为"失败几次才成功"。**翻译用不带 Reasoning 的模型更稳。**
+1. **带 `Reasoning` 标记的模型**（如 `qwen3-30b-a3b-fp8`、`gemma-4-26b-a4b-it`）会先"思考"再回答：慢，思考的 token 同样计费，小 `max_tokens` 下还可能把答案挤没，表现为"失败几次才成功"。
+   > 本项目**默认已关闭思考链**（`CF_EXTRA_PARAMS` 里的 `enable_thinking: false`），`glm-4.7-flash` 默认即为推荐配置，可放心使用。
 2. **带「第三方」标记的模型**（GPT / Claude / Grok 等）属于 AI Gateway 目录，需要预付余额并指定 `gateway`，**用不了每天的免费 Neurons 额度**。
 
-推荐组合（均为 Cloudflare 托管、免费额度可用）：
+如果想换更轻量的模型：
 
 | 定位 | 模型 | 上下文 | 单价(输入/输出 每 M) |
 | :--- | :--- | :--- | :--- |
-| 主力（快、稳、便宜） | `@cf/meta/llama-3.2-3b-instruct` | 80,000 | $0.0509 / $0.335 |
+| **默认（推荐）** | `@cf/zai-org/glm-4.7-flash` | 131,072 | $0.0605 / $0.40 |
 | 极致省钱 | `@cf/ibm-granite/granite-4.0-h-micro` | 131,000 | $0.017 / $0.112 |
+| 无思考链、更快 | `@cf/meta/llama-3.2-3b-instruct` | 80,000 | $0.0509 / $0.335 |
 | 质量优先 | `@cf/openai/gpt-oss-120b` | 见模型页 | $0.35 / $0.75 |
 
 想先试效果，可以直接用官方 Playground（无需配置）：
 
 ```text
-https://playground.ai.cloudflare.com/?model=@cf/meta/llama-3.2-3b-instruct
+https://playground.ai.cloudflare.com/?model=@cf/zai-org/glm-4.7-flash
 ```
 
 #### 超时与稳定性调优（可选）
@@ -83,7 +101,7 @@ https://playground.ai.cloudflare.com/?model=@cf/meta/llama-3.2-3b-instruct
 | :--- | :--- | :--- | :--- |
 | **`UPSTREAM_IDLE_TIMEOUT_MS`** | Text | `40000` | 上游多久没有任何数据返回就判定超时并重试 |
 | **`UPSTREAM_TOTAL_TIMEOUT_MS`** | Text | `300000` | 单次翻译请求的总时间上限，超过后直接报错 |
-| **`UPSTREAM_MAX_ATTEMPTS`** | Text | `3` | 上游失败自动重试次数（1-5），第 2 次起自动改用 `CF_MODEL_FALLBACK` |
+| **`UPSTREAM_MAX_ATTEMPTS`** | Text | `3` | 上游失败自动重试次数（1-5） |
 | **`SSE_HEARTBEAT_MS`** | Text | `15000` | 流式心跳间隔，避免网关/浏览器掐断长时间空闲的连接 |
 | **`REPAIR_TIMEOUT_MS`** | Text | `25000` | 词汇模式例句修复的超时时间 |
 
@@ -138,14 +156,24 @@ ENABLE_TURNSTILE=true
 现已修复：
 
 * 上游请求增加 **空闲超时** 与 **总超时**，并支持自动重试（重试时前端会收到 `reset` 事件，不会出现两次结果拼接）。
-* 显式传入 **`max_tokens`**（`CF_MAX_TOKENS`，默认 4096），长文不会再被模型默认的小上限截断。
-* 支持 **`CF_MODEL_FALLBACK`**：主模型失败后自动降级到备用模型，而不是反复重试同一个不稳定的模型；报错时会列出尝试过的模型。
+* 显式传入 **`max_tokens`**（`CF_MAX_TOKENS`，默认 8192），长文不会再被模型默认的小上限截断。
+* 默认 **关闭思考链**（`enable_thinking: false`），推理模型不再"先思考"，速度与额度都更省。
 * 增加 **SSE 心跳**（`event: ping`），长时间无内容也不会断开连接。
 * 请求一开始就返回 `start` 事件，浏览器立刻拿到响应头。
 * 同时兼容 **OpenAI 兼容接口** 与 **Cloudflare Workers AI** 的流式格式，并兜底处理“忽略 `stream:true` 直接返回整段 JSON”的平台。
 * 客户端增加 **看门狗**：服务端彻底失联时自动中断并给出超时提示，而不是无限等待。
 * 词汇模式先返回结果再做例句修复，二次调用超时也不会卡住请求。
 * 客户端断开连接时，立即中止上游请求，不再浪费配额。
+
+### ✅ 翻译质量保护
+
+为了避免"译文不对、语言不对"这类问题：
+
+* **输出语言自检**：译文生成后校验语言（例如目标中文却一个汉字都没有、目标英文却大段中文），命中时自动用**更严格的提示词重新生成一次**；重试后仍不正确则明确报错，而不会把语言不对的结果当成译文展示。
+* **自动剥离模型多余输出**：`<think>` 思考链、```` ``` ```` 代码围栏、`译文：`／`Here is the translation:` 之类的前缀，以及末尾的"语境识别/Note"注释。
+* **强制语言约束提示词**：明确告知模型源语言与目标语言，要求逐句翻译、不得遗留未翻译片段、不得输出解释。
+* **超短内容不做语言判定**：避免把专有名词、技术术语误判为语言错误。
+* 重试时前端收到 `reset` 事件，不会出现两次结果拼接。
 
 ### 📜 开源协议
 
